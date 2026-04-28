@@ -25,11 +25,17 @@ class DoctorReport:
         return not self.issues
 
 
-def doctor_report(store: VaultStore, now: datetime | None = None, expiring_days: int = 30) -> DoctorReport:
+def doctor_report(
+    store: VaultStore,
+    now: datetime | None = None,
+    expiring_days: int = 30,
+    project: str | None = None,
+    environment: str | None = None,
+) -> DoctorReport:
     now = now or datetime.now(UTC)
     cutoff = now + timedelta(days=expiring_days)
     issues: list[DoctorIssue] = []
-    for item in store.list_secrets():
+    for item in store.list_secrets(project=project, environment=environment):
         if not item.expires_at:
             issues.append(_issue("missing_expiry", "warning", item, "No expiry date set"))
         else:

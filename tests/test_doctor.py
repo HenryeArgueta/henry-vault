@@ -35,3 +35,20 @@ def test_doctor_report_flags_expired_expiring_and_missing_metadata(tmp_path):
     assert ("expiring_soon", "SOON") in codes
     assert ("missing_expiry", "NO_META") in codes
     assert ("missing_rotation_url", "NO_META") in codes
+
+
+def test_doctor_report_filters_by_project_and_environment(tmp_path):
+    store = VaultStore(tmp_path / "vault.db")
+    store.init("pw")
+    store.unlock("pw")
+    now = datetime(2026, 4, 28, tzinfo=UTC)
+    store.add_secret(SecretInput(name="BAD", value="secret", project="demo", environment="prod"))
+    store.add_secret(SecretInput(name="OTHER", value="secret", project="other", environment="prod"))
+    store.add_secret(SecretInput(name="DEV", value="secret", project="demo", environment="dev"))
+
+    report = doctor_report(store, now=now, project="demo", environment="prod")
+
+    names = {issue.secret_name for issue in report.issues}
+    assert "BAD" in names
+    assert "OTHER" not in names
+    assert "DEV" not in names

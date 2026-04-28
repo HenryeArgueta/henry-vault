@@ -135,6 +135,53 @@ def test_cli_set_metadata_and_doctor(tmp_path, monkeypatch):
     assert "TOKEN" not in result.output
 
 
+def test_cli_rotate_updates_value_metadata_and_audit_without_leaking_values(tmp_path, monkeypatch):
+    db_path = tmp_path / "vault.db"
+    monkeypatch.setenv("HENRY_VAULT_PASSWORD", "pw")
+    assert runner.invoke(app, ["--db", str(db_path), "init"]).exit_code == 0
+    assert runner.invoke(app, ["--db", str(db_path), "add", "TOKEN", "old-value", "--project", "demo", "--env", "prod"]).exit_code == 0
+
+    result = runner.invoke(
+        app,
+        [
+            "--db",
+            str(db_path),
+            "rotate",
+            "TOKEN",
+            "new-value",
+            "--project",
+            "demo",
+            "--env",
+            "prod",
+            "--expires-at",
+            "2027-12-31",
+            "--rotation-url",
+            "https://example.com/rotate",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "Rotated TOKEN" in result.output
+    assert "old-value" not in result.output
+    assert "new-value" not in result.output
+
+    result = runner.invoke(app, ["--db", str(db_path), "get", "TOKEN", "--project", "demo", "--env", "prod"])
+    assert result.exit_code == 0
+    assert result.output.strip() == "new-value"
+
+    result = runner.invoke(app, ["--db", str(db_path), "list", "--project", "demo", "--env", "prod"])
+    assert result.exit_code == 0
+    assert "TOKEN" in result.output
+    assert "new-value" not in result.output
+
+    result = runner.invoke(app, ["--db", str(db_path), "audit", "--limit", "20"])
+    assert result.exit_code == 0
+    assert "secret.rotate" in result.output
+    assert "TOKEN" in result.output
+    assert "old-value" not in result.output
+    assert "new-value" not in result.output
+
+
 def test_cli_install_cli_creates_link(tmp_path):
     target_dir = tmp_path / "bin"
     result = runner.invoke(app, ["install-cli", "--target-dir", str(target_dir), "--name", "hv-test"])
@@ -167,3 +214,19 @@ def test_cli_backup_schedule_command(tmp_path):
     assert str(vault_password_file) in result.output
     assert str(backup_password_file) in result.output
     assert "***" not in result.output
+
+
+def test_cli_doctor_filters_project_and_env(tmp_path, monkeypatch):
+    db_path = tmp_path / "vault.db"
+    monkeypatch.setenv("HENRY_VAULT_PASSWORD", "pw")
+    assert runner.invoke(app, ["--db", str(db_path), "init"]).exit_code == 0
+    assert runner.invoke(app, ["--db", str(db_path), "add", "BAD", "secret", "--project", "demo", "--env", "prod"]).exit_code == 0
+    assert runner.invoke(app, ["--db", str(db_path), "add", "OTHER", "secret", "--project", "other", "--env", "prod"]).exit_code == 0
+    assert runner.invoke(app, ["--db", str(db_path), "add", "DEV", "secret", "--project", "demo", "--env", "dev"]).exit_code == 0
+
+    result = runner.invoke(app, ["--db", str(db_path), "doctor", "--project", "demo", "--env", "prod"])
+
+    assert result.exit_code == 1
+    assert "BAD" in result.output
+    assert "OTHER" not in result.output
+    assert "DEV" not in result.output

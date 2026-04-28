@@ -19,7 +19,8 @@ Secret values are encrypted at rest with Fernet. The vault encryption key is der
 - Start a local FastAPI web UI/API with short-lived HttpOnly browser sessions and bearer-token API compatibility.
 - Record audit events for unlocks, adds, gets, lists, scans, web logins, and web reveals.
 - Track rotation metadata: expiry date and rotation URL/instructions.
-- Run `doctor` checks for expired, expiring, and under-documented secrets.
+- Rotate existing secrets without leaking old or new values in output/audit logs.
+- `doctor` can focus on a project and/or environment.
 - Install a user-level `hv` symlink.
 - Emit a cron-compatible encrypted backup command.
 
@@ -44,11 +45,11 @@ If `~/.local/bin` is on your `PATH`, `hv` will work from anywhere.
 For interactive use, omit `HENRY_VAULT_PASSWORD` and the CLI will prompt.
 
 ```bash
-export HENRY_VAULT_PASSWORD='choose-a-strong-master-password'
+export HENRY_VAULT_PASSWORD='choose...word'
 
 hv init
 hv add OPENAI_API_KEY 'sk-your-key' --project discord-bot --env prod --tag ai
-hv set-metadata OPENAI_API_KEY --project discord-bot --env prod --expires-at 2027-05-01 --rotation-url 'https://platform.example/keys'
+hv rotate OPENAI_API_KEY 'sk-new-key' --project discord-bot --env prod --expires-at 2027-05-01 --rotation-url 'https://platform.example/keys'
 hv list --project discord-bot --env prod
 hv get OPENAI_API_KEY --project discord-bot --env prod
 hv export-env --project discord-bot --env prod
@@ -91,6 +92,7 @@ Events include actions like:
 - `secret.add`
 - `secret.get`
 - `secret.list`
+- `secret.rotate`
 - `secret.metadata`
 - `scan.run`
 - `web.login`
@@ -99,7 +101,7 @@ Events include actions like:
 
 ## Doctor checks and rotation metadata
 
-Set metadata:
+Set metadata without changing the value:
 
 ```bash
 hv set-metadata OPENAI_API_KEY \
@@ -109,11 +111,24 @@ hv set-metadata OPENAI_API_KEY \
   --rotation-url 'https://platform.example/keys'
 ```
 
+Rotate an existing secret value without printing the old or new value in command output or audit logs:
+
+```bash
+hv rotate OPENAI_API_KEY \
+  --project discord-bot \
+  --env prod \
+  --expires-at 2027-05-01 \
+  --rotation-url 'https://platform.example/keys'
+```
+
+You can also pass the new value as an argument for automation, but interactive prompting is safer for normal terminal use.
+
 Run hygiene checks:
 
 ```bash
 hv doctor
 hv doctor --expiring-days 60
+hv doctor --project discord-bot --env prod
 ```
 
 Doctor flags:

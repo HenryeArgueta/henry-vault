@@ -214,13 +214,44 @@ def set_metadata(
     typer.echo(f"Updated metadata for {name} [{project}/{env}]")
 
 
+@app.command("rotate")
+def rotate_secret(
+    ctx: typer.Context,
+    name: str,
+    value: Annotated[Optional[str], typer.Argument(help="New secret value. Omit to prompt hidden input.")] = None,
+    project: ProjectOpt = "default",
+    env: EnvOpt = "default",
+    expires_at: Annotated[Optional[str], typer.Option("--expires-at", help="New expiry date, e.g. YYYY-MM-DD")] = None,
+    rotation_url: Annotated[Optional[str], typer.Option("--rotation-url", help="Rotation URL or instructions link")] = None,
+) -> None:
+    """Rotate an existing secret value without printing it."""
+    store = _unlock(ctx.obj["db"])
+    existing = store.get_secret(name, project=project, environment=env)
+    if existing is None:
+        store.record_audit("secret.rotate", secret_name=name, project=project, environment=env, status="not_found")
+        raise typer.Exit(1)
+    if value is None:
+        value = getpass.getpass(f"New value for {name}: ")
+    store.add_secret(SecretInput(name=name, value=value, project=project, environment=env, tags=existing.tags, notes=existing.notes))
+    if expires_at is not None or rotation_url is not None:
+        store.set_secret_metadata(name, project=project, environment=env, expires_at=expires_at, rotation_url=rotation_url)
+    store.record_audit("secret.rotate", secret_name=name, project=project, environment=env)
+    typer.echo(f"Rotated {name} [{project}/{env}]")
+
+
 @app.command("doctor")
-def doctor(ctx: typer.Context, expiring_days: Annotated[int, typer.Option("--expiring-days", help="Days ahead to flag expiring secrets")] = 30) -> None:
+def doctor(
+    ctx: typer.Context,
+    expiring_days: Annotated[int, typer.Option("--expiring-days", help="Days ahead to flag expiring secrets")] = 30,
+    project: Annotated[Optional[str], typer.Option("--project", help="Only check this project")] = None,
+    env: Annotated[Optional[str], typer.Option("--env", help="Only check this environment")] = None,
+) -> None:
     """Check vault hygiene: expirations and rotation metadata."""
     store = _unlock(ctx.obj["db"])
-    report = doctor_report(store, expiring_days=expiring_days)
+    report = doctor_report(store, expiring_days=expiring_days, project=project, environment=env)
     if report.ok:
-        typer.echo("Vault doctor: OK")
+        scope = f" [{project or '*'}/{env or '*'}]" if project or env else ""
+        typer.echo(f"Vault doctor{scope}: OK")
         return
     for issue in report.issues:
         typer.echo(f"{issue.severity} {issue.code} {issue.project}/{issue.environment} {issue.secret_name}: {issue.message}")
