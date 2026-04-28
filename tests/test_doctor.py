@@ -1,0 +1,37 @@
+from datetime import UTC, datetime, timedelta
+
+from henry_vault.doctor import doctor_report
+from henry_vault.store import SecretInput, VaultStore
+
+
+def test_set_secret_metadata_tracks_expiry_and_rotation_url(tmp_path):
+    store = VaultStore(tmp_path / "vault.db")
+    store.init("pw")
+    store.unlock("pw")
+    store.add_secret(SecretInput(name="TOKEN", value="secret", project="demo", environment="prod"))
+
+    store.set_secret_metadata("TOKEN", project="demo", environment="prod", expires_at="2026-05-01", rotation_url="https://example.com/rotate")
+
+    secret = store.get_secret("TOKEN", project="demo", environment="prod")
+    assert secret.expires_at == "2026-05-01"
+    assert secret.rotation_url == "https://example.com/rotate"
+
+
+def test_doctor_report_flags_expired_expiring_and_missing_metadata(tmp_path):
+    store = VaultStore(tmp_path / "vault.db")
+    store.init("pw")
+    store.unlock("pw")
+    now = datetime(2026, 4, 28, tzinfo=UTC)
+    store.add_secret(SecretInput(name="EXPIRED", value="secret"))
+    store.set_secret_metadata("EXPIRED", expires_at="2026-04-01", rotation_url="https://example.com/expired")
+    store.add_secret(SecretInput(name="SOON", value="secret"))
+    store.set_secret_metadata("SOON", expires_at="2026-05-05", rotation_url="https://example.com/soon")
+    store.add_secret(SecretInput(name="NO_META", value="secret"))
+
+    report = doctor_report(store, now=now, expiring_days=14)
+
+    codes = {(issue.code, issue.secret_name) for issue in report.issues}
+    assert ("expired", "EXPIRED") in codes
+    assert ("expiring_soon", "SOON") in codes
+    assert ("missing_expiry", "NO_META") in codes
+    assert ("missing_rotation_url", "NO_META") in codes

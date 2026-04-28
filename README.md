@@ -17,6 +17,11 @@ Secret values are encrypted at rest with Fernet. The vault encryption key is der
 - Export/import encrypted backup bundles with a separate backup password.
 - Scan repos for likely leaked secrets and known vault secret values.
 - Start a local FastAPI web UI/API with short-lived bearer sessions.
+- Record audit events for unlocks, adds, gets, lists, scans, web logins, and web reveals.
+- Track rotation metadata: expiry date and rotation URL/instructions.
+- Run `doctor` checks for expired, expiring, and under-documented secrets.
+- Install a user-level `hv` symlink.
+- Emit a cron-compatible encrypted backup command.
 
 ## Install for local development
 
@@ -25,6 +30,14 @@ cd /home/henry/.openclaw/workspace/henry-vault
 python3 -m venv .venv
 .venv/bin/pip install -e '.[test]'
 ```
+
+Install a convenient `hv` symlink:
+
+```bash
+.venv/bin/hv install-cli
+```
+
+If `~/.local/bin` is on your `PATH`, `hv` will work from anywhere.
 
 ## CLI quickstart
 
@@ -35,6 +48,7 @@ export HENRY_VAULT_PASSWORD='choose-a-strong-master-password'
 
 hv init
 hv add OPENAI_API_KEY 'sk-your-key' --project discord-bot --env prod --tag ai
+hv set-metadata OPENAI_API_KEY --project discord-bot --env prod --expires-at 2027-05-01 --rotation-url 'https://platform.example/keys'
 hv list --project discord-bot --env prod
 hv get OPENAI_API_KEY --project discord-bot --env prod
 hv export-env --project discord-bot --env prod
@@ -63,6 +77,52 @@ QUOTED="hello world"
 SINGLE='hello world'
 ```
 
+## Audit log
+
+Show recent audit events without secret values:
+
+```bash
+hv audit --limit 25
+```
+
+Events include actions like:
+
+- `vault.unlock`
+- `secret.add`
+- `secret.get`
+- `secret.list`
+- `secret.metadata`
+- `scan.run`
+- `web.login`
+- `web.secret.list`
+- `web.secret.reveal`
+
+## Doctor checks and rotation metadata
+
+Set metadata:
+
+```bash
+hv set-metadata OPENAI_API_KEY \
+  --project discord-bot \
+  --env prod \
+  --expires-at 2027-05-01 \
+  --rotation-url 'https://platform.example/keys'
+```
+
+Run hygiene checks:
+
+```bash
+hv doctor
+hv doctor --expiring-days 60
+```
+
+Doctor flags:
+
+- expired secrets
+- secrets expiring soon
+- missing expiry dates
+- missing rotation URLs/instructions
+
 ## Encrypted backups
 
 Backups are encrypted JSON bundles. Use a separate strong backup password.
@@ -77,6 +137,21 @@ For automation/testing, you can pass the backup password directly:
 ```bash
 hv backup-export /tmp/backup.hv.json --backup-password 'strong-backup-password'
 hv backup-import /tmp/backup.hv.json --backup-password 'strong-backup-password'
+```
+
+Emit a cron-compatible backup command:
+
+```bash
+hv backup-schedule-command \
+  --backup-path ~/backups/henry-vault-$(date +%F).hv.json \
+  --password-file ~/.henry-vault/backup-password.txt \
+  --hv-executable ~/.local/bin/hv
+```
+
+Example crontab entry for 2:15 AM daily:
+
+```cron
+15 2 * * * HENRY_VAULT_PASSWORD="$(cat /home/henry/.henry-vault/backup-password.txt)" /home/henry/.local/bin/hv --db /home/henry/.henry-vault/vault.db backup-export /home/henry/backups/henry-vault-$(date +\%F).hv.json --backup-password "$(cat /home/henry/.henry-vault/backup-password.txt)"
 ```
 
 ## Scan for leaked secrets
@@ -112,7 +187,7 @@ Then open:
 http://127.0.0.1:8787
 ```
 
-The web UI now unlocks via `/api/login` and uses a short-lived in-memory bearer token for follow-up API calls.
+The web UI unlocks via `/api/login` and uses a short-lived in-memory bearer token for follow-up API calls.
 
 Important: keep this local-only for now. Do not expose it to the public internet without TLS, rate limiting, and network controls such as Tailscale, WireGuard, or Cloudflare Access.
 
@@ -153,12 +228,13 @@ Good defaults already included:
 - scanner output masks secrets
 - backup bundles encrypt plaintext values
 - web UI avoids sending the master password on every reveal/list call after login
+- audit log avoids storing secret values
+- doctor reports operational hygiene issues
 
 Future hardening ideas:
 
 - passkeys/WebAuthn or YubiKey unlock
-- audit log
-- secret rotation reminders
-- encrypted backup scheduling
+- secure cookie sessions and CSRF protection
+- rate limiting
 - team sharing with per-secret access control
-- packaging/install script so `hv` is globally available
+- packaged release via pipx or a private GitHub release

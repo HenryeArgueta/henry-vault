@@ -32,6 +32,8 @@ def export_backup(store: VaultStore, path: str | Path, backup_password: str) -> 
                 "environment": secret.environment,
                 "tags": secret.tags,
                 "notes": secret.notes,
+                "expires_at": secret.expires_at,
+                "rotation_url": secret.rotation_url,
             }
         )
     encrypted = fernet.encrypt(json.dumps({"secrets": secrets}, sort_keys=True).encode()).decode()
@@ -70,6 +72,13 @@ def import_backup(store: VaultStore, path: str | Path, backup_password: str) -> 
                 tags=item.get("tags", []),
                 notes=item.get("notes", ""),
             )
+        )
+        store.set_secret_metadata(
+            item["name"],
+            project=item.get("project", "default"),
+            environment=item.get("environment", "default"),
+            expires_at=item.get("expires_at"),
+            rotation_url=item.get("rotation_url"),
         )
         count += 1
     return count

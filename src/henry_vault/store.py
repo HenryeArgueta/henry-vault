@@ -38,11 +38,25 @@ class SecretMetadata:
     notes: str
     created_at: str
     updated_at: str
+    expires_at: str | None = None
+    rotation_url: str | None = None
 
 
 @dataclass(frozen=True)
 class Secret(SecretMetadata):
-    value: str
+    value: str = ""
+
+
+@dataclass(frozen=True)
+class AuditEvent:
+    id: int
+    action: str
+    secret_name: str | None
+    project: str | None
+    environment: str | None
+    status: str
+    message: str
+    created_at: str
 
 
 class VaultStore:
@@ -73,6 +87,7 @@ class VaultStore:
     def unlock(self, password: str) -> None:
         self._ensure_initialized()
         with self._connect() as conn:
+            self._migrate_schema(conn)
             salt_b64 = self._meta(conn, "kdf_salt")
             verifier = self._meta(conn, "verifier")
         salt = base64.b64decode(salt_b64)
@@ -108,7 +123,7 @@ class VaultStore:
         with self._connect() as conn:
             row = conn.execute(
                 """
-                SELECT id, name, project, environment, encrypted_value, tags, notes, created_at, updated_at
+                SELECT id, name, project, environment, encrypted_value, tags, notes, created_at, updated_at, expires_at, rotation_url
                 FROM secrets WHERE name=? AND project=? AND environment=?
                 """,
                 (name, project, environment),
@@ -131,7 +146,7 @@ class VaultStore:
         with self._connect() as conn:
             rows = conn.execute(
                 f"""
-                SELECT id, name, project, environment, tags, notes, created_at, updated_at
+                SELECT id, name, project, environment, tags, notes, created_at, updated_at, expires_at, rotation_url
                 FROM secrets {where} ORDER BY project, environment, name
                 """,
                 params,
@@ -180,6 +195,81 @@ class VaultStore:
             self.add_secret(SecretInput(name=name, value=value, project=project, environment=environment, tags=tags or []))
         return sorted(parsed.keys())
 
+    def set_secret_metadata(
+        self,
+        name: str,
+        project: str = "default",
+        environment: str = "default",
+        expires_at: str | None = None,
+        rotation_url: str | None = None,
+    ) -> bool:
+        self._require_unlocked()
+        with self._connect() as conn:
+            self._migrate_schema(conn)
+            cur = conn.execute(
+                """
+                UPDATE secrets
+                SET expires_at=COALESCE(?, expires_at),
+                    rotation_url=COALESCE(?, rotation_url),
+                    updated_at=?
+                WHERE name=? AND project=? AND environment=?
+                """,
+                (expires_at, rotation_url, self._now(), name, project, environment),
+            )
+        return cur.rowcount > 0
+
+    def record_audit(
+        self,
+        action: str,
+        secret_name: str | None = None,
+        project: str | None = None,
+        environment: str | None = None,
+        status: str = "success",
+        message: str = "",
+    ) -> None:
+        self._ensure_initialized()
+        with self._connect() as conn:
+            self._migrate_schema(conn)
+            conn.execute(
+                """
+                INSERT INTO audit_events(action, secret_name, project, environment, status, message, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (action, secret_name, project, environment, status, message, self._now()),
+            )
+
+    def list_audit_events(self, action: str | None = None, limit: int = 50) -> list[AuditEvent]:
+        self._ensure_initialized()
+        clauses = []
+        params: list[object] = []
+        if action:
+            clauses.append("action=?")
+            params.append(action)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(limit)
+        with self._connect() as conn:
+            self._migrate_schema(conn)
+            rows = conn.execute(
+                f"""
+                SELECT id, action, secret_name, project, environment, status, message, created_at
+                FROM audit_events {where} ORDER BY id DESC LIMIT ?
+                """,
+                params,
+            ).fetchall()
+        return [
+            AuditEvent(
+                id=int(row["id"]),
+                action=str(row["action"]),
+                secret_name=row["secret_name"],
+                project=row["project"],
+                environment=row["environment"],
+                status=str(row["status"]),
+                message=str(row["message"]),
+                created_at=str(row["created_at"]),
+            )
+            for row in rows
+        ]
+
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
@@ -202,10 +292,30 @@ class VaultStore:
                 notes TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
+                expires_at TEXT,
+                rotation_url TEXT,
                 UNIQUE(name, project, environment)
+            );
+            CREATE TABLE IF NOT EXISTS audit_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                action TEXT NOT NULL,
+                secret_name TEXT,
+                project TEXT,
+                environment TEXT,
+                status TEXT NOT NULL DEFAULT 'success',
+                message TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL
             );
             """
         )
+
+    def _migrate_schema(self, conn: sqlite3.Connection) -> None:
+        self._create_schema(conn)
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(secrets)").fetchall()}
+        if "expires_at" not in columns:
+            conn.execute("ALTER TABLE secrets ADD COLUMN expires_at TEXT")
+        if "rotation_url" not in columns:
+            conn.execute("ALTER TABLE secrets ADD COLUMN rotation_url TEXT")
 
     def _has_schema(self, conn: sqlite3.Connection) -> bool:
         row = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='meta'").fetchone()
@@ -254,6 +364,8 @@ class VaultStore:
             notes=str(row["notes"]),
             created_at=str(row["created_at"]),
             updated_at=str(row["updated_at"]),
+            expires_at=row["expires_at"] if "expires_at" in row.keys() else None,
+            rotation_url=row["rotation_url"] if "rotation_url" in row.keys() else None,
         )
 
     def _row_to_secret(self, row: sqlite3.Row, fernet: Fernet) -> Secret:

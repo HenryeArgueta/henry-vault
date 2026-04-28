@@ -130,10 +130,11 @@ def create_app(db_path: str | Path = DEFAULT_DB_PATH) -> FastAPI:
 
     @app.post("/api/login")
     def login(request: LoginRequest) -> dict[str, str | int]:
-        store_for_password(request.password)
+        store = store_for_password(request.password)
         token = secrets.token_urlsafe(32)
         ttl_seconds = 15 * 60
         sessions[token] = Session(password=request.password, expires_at=datetime.now(UTC) + timedelta(seconds=ttl_seconds))
+        store.record_audit("web.login", status="success")
         return {"token": token, "expires_in": ttl_seconds}
 
     @app.get("/api/secrets")
@@ -142,7 +143,9 @@ def create_app(db_path: str | Path = DEFAULT_DB_PATH) -> FastAPI:
         environment: Optional[str] = None,
         store: VaultStore = Depends(store_for_session),
     ) -> list[dict]:
-        return [item.__dict__ for item in store.list_secrets(project=project, environment=environment)]
+        items = store.list_secrets(project=project, environment=environment)
+        store.record_audit("web.secret.list", project=project, environment=environment, message=f"count={len(items)}")
+        return [item.__dict__ for item in items]
 
     @app.get("/api/secrets/reveal")
     def reveal(
@@ -153,7 +156,9 @@ def create_app(db_path: str | Path = DEFAULT_DB_PATH) -> FastAPI:
     ) -> dict[str, str]:
         secret = store.get_secret(name, project=project, environment=environment)
         if secret is None:
+            store.record_audit("web.secret.reveal", secret_name=name, project=project, environment=environment, status="not_found")
             raise HTTPException(status_code=404, detail="Secret not found")
+        store.record_audit("web.secret.reveal", secret_name=name, project=project, environment=environment)
         return {"name": secret.name, "value": secret.value}
 
     return app

@@ -101,3 +101,64 @@ def test_cli_scan_reports_findings_without_full_secret(tmp_path, monkeypatch):
     assert result.exit_code == 2
     assert "known-vault-secret" in result.output
     assert "known-secret" not in result.output
+
+
+def test_cli_audit_lists_recent_events(tmp_path, monkeypatch):
+    db_path = tmp_path / "vault.db"
+    monkeypatch.setenv("HENRY_VAULT_PASSWORD", "pw")
+    assert runner.invoke(app, ["--db", str(db_path), "init"]).exit_code == 0
+    assert runner.invoke(app, ["--db", str(db_path), "add", "TOKEN", "secret"]).exit_code == 0
+    assert runner.invoke(app, ["--db", str(db_path), "get", "TOKEN"]).exit_code == 0
+
+    result = runner.invoke(app, ["--db", str(db_path), "audit", "--limit", "10"])
+
+    assert result.exit_code == 0
+    assert "secret.get" in result.output
+    assert "TOKEN" in result.output
+    assert " default/default TOKEN secret" not in result.output
+
+
+def test_cli_set_metadata_and_doctor(tmp_path, monkeypatch):
+    db_path = tmp_path / "vault.db"
+    monkeypatch.setenv("HENRY_VAULT_PASSWORD", "pw")
+    assert runner.invoke(app, ["--db", str(db_path), "init"]).exit_code == 0
+    assert runner.invoke(app, ["--db", str(db_path), "add", "TOKEN", "secret"]).exit_code == 0
+    result = runner.invoke(
+        app,
+        ["--db", str(db_path), "set-metadata", "TOKEN", "--expires-at", "2027-05-01", "--rotation-url", "https://example.com/rotate"],
+    )
+    assert result.exit_code == 0
+    assert "Updated metadata" in result.output
+
+    result = runner.invoke(app, ["--db", str(db_path), "doctor"])
+    assert result.exit_code == 0
+    assert "TOKEN" not in result.output
+
+
+def test_cli_install_cli_creates_link(tmp_path):
+    target_dir = tmp_path / "bin"
+    result = runner.invoke(app, ["install-cli", "--target-dir", str(target_dir), "--name", "hv-test"])
+
+    assert result.exit_code == 0
+    assert (target_dir / "hv-test").exists()
+    assert "Installed" in result.output
+
+
+def test_cli_backup_schedule_command(tmp_path):
+    password_file = tmp_path / "pw.txt"
+    result = runner.invoke(
+        app,
+        [
+            "backup-schedule-command",
+            "--backup-path",
+            str(tmp_path / "backup.hv.json"),
+            "--password-file",
+            str(password_file),
+            "--hv-executable",
+            "/tmp/hv",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "backup-export" in result.output
+    assert str(password_file) in result.output
