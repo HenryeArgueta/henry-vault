@@ -23,6 +23,7 @@ class LoginRequest(BaseModel):
 class Session:
     password: str
     expires_at: datetime
+    csrf_token: str
 
 
 @dataclass
@@ -66,9 +67,16 @@ HTML = """
   </div>
   <div class="card" style="margin-top: 1rem;">
     <h2>Doctor</h2>
-    <pre id="doctor"></pre>
+    <div id="doctor-summary" class="muted">Run Doctor to check vault hygiene.</div>
+    <table>
+      <thead><tr><th>Severity</th><th>Code</th><th>Scope</th><th>Secret</th><th>Message</th></tr></thead>
+      <tbody id="doctor-issues"></tbody>
+    </table>
     <h2>Audit</h2>
-    <pre id="audit"></pre>
+    <table>
+      <thead><tr><th>Time</th><th>Action</th><th>Status</th><th>Scope</th><th>Secret</th><th>Message</th></tr></thead>
+      <tbody id="audit-events"></tbody>
+    </table>
   </div>
   <table>
     <thead><tr><th>Project</th><th>Env</th><th>Name</th><th>Tags</th><th>Updated</th><th>Reveal</th></tr></thead>
@@ -76,17 +84,24 @@ HTML = """
   </table>
   <script>
     let unlocked = false;
+    let csrfToken = '';
     async function login() {
       const res = await fetch('/api/login', {method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({password: document.getElementById('password').value})});
       if (!res.ok) { alert(res.status === 429 ? 'Too many failed attempts; try again later.' : 'Unlock failed'); return; }
-      await res.json();
+      const data = await res.json();
+      csrfToken = data.csrf_token || '';
       unlocked = true;
       document.getElementById('password').value = '';
       alert('Unlocked for this browser.');
     }
     function authHeaders() { return {}; }
+    function csrfHeaders() { return csrfToken ? {'X-CSRF-Token': csrfToken} : {}; }
+    function escapeHtml(value) {
+      return String(value ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
+    }
     async function logout() {
-      await fetch('/api/logout', {method: 'POST'});
+      await fetch('/api/logout', {method: 'POST', headers: csrfHeaders()});
+      csrfToken = '';
       unlocked = false;
       document.getElementById('rows').innerHTML = '';
       alert('Logged out.');
@@ -125,13 +140,26 @@ HTML = """
       if (environment) params.set('environment', environment);
       const res = await fetch('/api/doctor?' + params.toString(), {headers: authHeaders()});
       if (!res.ok) { alert('Doctor failed'); return; }
-      document.getElementById('doctor').textContent = JSON.stringify(await res.json(), null, 2);
+      const data = await res.json();
+      document.getElementById('doctor-summary').textContent = data.ok ? 'Vault doctor: OK' : `${data.issues.length} issue(s) found`;
+      document.getElementById('doctor-issues').innerHTML = (data.issues || []).map(issue => `
+        <tr>
+          <td>${escapeHtml(issue.severity)}</td><td><code>${escapeHtml(issue.code)}</code></td>
+          <td>${escapeHtml(issue.project)}/${escapeHtml(issue.environment)}</td><td><code>${escapeHtml(issue.secret_name)}</code></td>
+          <td>${escapeHtml(issue.message)}</td>
+        </tr>`).join('');
     }
     async function loadAudit() {
       if (!unlocked) { alert('Unlock first'); return; }
       const res = await fetch('/api/audit?limit=25', {headers: authHeaders()});
       if (!res.ok) { alert('Audit failed'); return; }
-      document.getElementById('audit').textContent = JSON.stringify(await res.json(), null, 2);
+      const data = await res.json();
+      document.getElementById('audit-events').innerHTML = (data || []).map(event => `
+        <tr>
+          <td>${escapeHtml(event.created_at)}</td><td><code>${escapeHtml(event.action)}</code></td><td>${escapeHtml(event.status)}</td>
+          <td>${escapeHtml(event.project || '-')}/${escapeHtml(event.environment || '-')}</td><td><code>${escapeHtml(event.secret_name || '-')}</code></td>
+          <td>${escapeHtml(event.message)}</td>
+        </tr>`).join('');
     }
   </script>
 </body>
@@ -215,8 +243,9 @@ def create_app(
             raise
         failed_logins.pop(key, None)
         token = secrets.token_urlsafe(32)
+        csrf_token = secrets.token_urlsafe(32)
         ttl_seconds = 15 * 60
-        sessions[token] = Session(password=login_request.password, expires_at=datetime.now(UTC) + timedelta(seconds=ttl_seconds))
+        sessions[token] = Session(password=login_request.password, expires_at=datetime.now(UTC) + timedelta(seconds=ttl_seconds), csrf_token=csrf_token)
         response.set_cookie(
             COOKIE_NAME,
             token,
@@ -226,12 +255,22 @@ def create_app(
             secure=False,
         )
         store.record_audit("web.login", status="success")
-        return {"token": token, "expires_in": ttl_seconds}
+        return {"token": token, "csrf_token": csrf_token, "expires_in": ttl_seconds}
 
     @app.post("/api/logout")
-    def logout(response: Response, hv_session: str | None = Cookie(default=None, alias=COOKIE_NAME), authorization: str = Header(default="")) -> dict[str, bool]:
+    def logout(
+        response: Response,
+        hv_session: str | None = Cookie(default=None, alias=COOKIE_NAME),
+        authorization: str = Header(default=""),
+        x_csrf_token: str = Header(default=""),
+    ) -> dict[str, bool]:
         scheme, _, header_token = authorization.partition(" ")
-        token = header_token if scheme.lower() == "bearer" and header_token else hv_session
+        bearer_token = header_token if scheme.lower() == "bearer" and header_token else ""
+        token = bearer_token or hv_session
+        if hv_session and not bearer_token:
+            session = sessions.get(hv_session)
+            if session is None or not secrets.compare_digest(session.csrf_token, x_csrf_token):
+                raise HTTPException(status_code=403, detail="Invalid CSRF token")
         if token:
             sessions.pop(token, None)
         response.delete_cookie(COOKIE_NAME)

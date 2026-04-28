@@ -6,7 +6,7 @@ import pytest
 
 from henry_vault.backup import export_backup, import_backup, prune_backups
 from henry_vault.errors import VaultLocked
-from henry_vault.store import SecretInput, VaultStore
+from henry_vault.store import AttachmentInput, SecretInput, VaultStore
 
 
 def test_backup_export_does_not_contain_plaintext_secret(tmp_path):
@@ -43,6 +43,40 @@ def test_backup_import_restores_into_new_vault(tmp_path):
     secret = restored.get_secret("TOKEN", project="demo", environment="prod")
     assert secret.value == "super-secret"
     assert secret.tags == ["x"]
+
+
+def test_backup_export_import_includes_encrypted_attachments(tmp_path):
+    source = VaultStore(tmp_path / "source.db")
+    source.init("pw")
+    source.unlock("pw")
+    source.add_attachment(
+        AttachmentInput(
+            name="RECOVERY_CODES",
+            filename="recovery-codes.txt",
+            content=b"code-1\ncode-2",
+            project="demo",
+            environment="prod",
+            content_type="text/plain",
+        )
+    )
+    backup_path = tmp_path / "backup.hv.json"
+
+    export_backup(source, backup_path, backup_password="backup-pw")
+
+    raw = backup_path.read_text()
+    assert "code-1" not in raw
+    assert "RECOVERY_CODES" not in raw
+
+    restored = VaultStore(tmp_path / "restored.db")
+    restored.init("new-pw")
+    restored.unlock("new-pw")
+    count = import_backup(restored, backup_path, backup_password="backup-pw")
+
+    assert count == 1
+    attachment = restored.get_attachment("RECOVERY_CODES", project="demo", environment="prod")
+    assert attachment.content == b"code-1\ncode-2"
+    assert attachment.filename == "recovery-codes.txt"
+    assert attachment.content_type == "text/plain"
 
 
 def test_backup_import_rejects_wrong_password(tmp_path):

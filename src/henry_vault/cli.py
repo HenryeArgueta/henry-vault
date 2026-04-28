@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import getpass
+import os
 import subprocess
 from pathlib import Path
 from typing import Annotated, Optional
@@ -12,7 +13,7 @@ from .doctor import doctor_report
 from .errors import VaultAlreadyExists, VaultError, VaultLocked, VaultNotInitialized
 from .install import backup_schedule_command, install_cli
 from .scanner import scan_path
-from .store import DEFAULT_DB_PATH, SecretInput, VaultStore
+from .store import DEFAULT_DB_PATH, AttachmentInput, SecretInput, VaultStore
 
 app = typer.Typer(help="Henry Vault: encrypted local secrets manager")
 
@@ -129,6 +130,71 @@ def delete_secret(ctx: typer.Context, name: str, project: ProjectOpt = "default"
     store = _unlock(ctx.obj["db"])
     deleted = store.delete_secret(name, project=project, environment=env)
     typer.echo("Deleted" if deleted else "Not found")
+
+
+@app.command("attachment-add")
+def attachment_add(
+    ctx: typer.Context,
+    name: str,
+    path: Path,
+    project: ProjectOpt = "default",
+    env: EnvOpt = "default",
+    content_type: Annotated[str, typer.Option("--content-type", help="Attachment MIME type")] = "application/octet-stream",
+    notes: Annotated[str, typer.Option("--notes", help="Notes for this attachment")] = "",
+) -> None:
+    """Add or update an encrypted file attachment."""
+    store = _unlock(ctx.obj["db"])
+    content = path.read_bytes()
+    store.add_attachment(
+        AttachmentInput(
+            name=name,
+            filename=path.name,
+            content=content,
+            project=project,
+            environment=env,
+            content_type=content_type,
+            notes=notes,
+        )
+    )
+    store.record_audit("attachment.add", secret_name=name, project=project, environment=env, message=f"filename={path.name} size={len(content)}")
+    typer.echo(f"Saved attachment {name} [{project}/{env}] filename={path.name} size={len(content)}")
+
+
+@app.command("attachment-list")
+def attachment_list(
+    ctx: typer.Context,
+    project: Annotated[Optional[str], typer.Option("--project")] = None,
+    env: Annotated[Optional[str], typer.Option("--env")] = None,
+) -> None:
+    """List encrypted attachment metadata without content."""
+    store = _unlock(ctx.obj["db"])
+    items = store.list_attachments(project=project, environment=env)
+    store.record_audit("attachment.list", project=project, environment=env, message=f"count={len(items)}")
+    if not items:
+        typer.echo("No attachments found.")
+        return
+    for item in items:
+        typer.echo(f"{item.project}/{item.environment} {item.name} file={item.filename} type={item.content_type} size={item.size} updated={item.updated_at}")
+
+
+@app.command("attachment-get")
+def attachment_get(
+    ctx: typer.Context,
+    name: str,
+    output_path: Path,
+    project: ProjectOpt = "default",
+    env: EnvOpt = "default",
+) -> None:
+    """Write one decrypted attachment to a file."""
+    store = _unlock(ctx.obj["db"])
+    attachment = store.get_attachment(name, project=project, environment=env)
+    if attachment is None:
+        store.record_audit("attachment.get", secret_name=name, project=project, environment=env, status="not_found")
+        raise typer.Exit(1)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_bytes(attachment.content)
+    store.record_audit("attachment.get", secret_name=name, project=project, environment=env, message=f"filename={attachment.filename} size={attachment.size}")
+    typer.echo(f"Wrote attachment {name} to {output_path}")
 
 
 @app.command("export-env")
@@ -369,12 +435,26 @@ def run_command(
     command: Annotated[list[str], typer.Argument(help="Command to run after --")],
     project: Annotated[Optional[str], typer.Option("--project")] = None,
     env: Annotated[Optional[str], typer.Option("--env")] = None,
+    allow_missing: Annotated[bool, typer.Option("--allow-missing", help="Run even when required profile secrets are missing")] = False,
 ) -> None:
     """Run a command with matching secrets injected into its environment."""
     if not command:
         raise typer.BadParameter("Provide a command after --")
     store = _unlock(ctx.obj["db"])
-    result = subprocess.run(command, env=store.environment(project=project, environment=env), check=False)
+    secrets = store.secrets_dict(project=project, environment=env)
+    if project is not None and env is not None and not allow_missing:
+        profiles = store.list_project_profiles(project=project, environment=env)
+        if profiles:
+            required = profiles[0].required_secrets
+            missing = sorted(name for name in required if name not in secrets)
+            if missing:
+                message = f"missing={','.join(missing)}"
+                store.record_audit("run.blocked", project=project, environment=env, status="missing_required", message=message)
+                typer.echo(f"Missing required secrets for {project}/{env}: {', '.join(missing)}")
+                raise typer.Exit(1)
+    command_env = dict(os.environ)
+    command_env.update(secrets)
+    result = subprocess.run(command, env=command_env, check=False)
     raise typer.Exit(result.returncode)
 
 

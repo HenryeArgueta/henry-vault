@@ -11,7 +11,7 @@ from argon2.low_level import Type, hash_secret_raw
 from cryptography.fernet import Fernet, InvalidToken
 
 from .errors import VaultLocked
-from .store import SecretInput, VaultStore
+from .store import AttachmentInput, SecretInput, VaultStore
 
 FORMAT = "henry-vault-backup-v1"
 
@@ -52,7 +52,23 @@ def export_backup(store: VaultStore, path: str | Path, backup_password: str) -> 
                 "rotation_url": secret.rotation_url,
             }
         )
-    encrypted = fernet.encrypt(json.dumps({"secrets": secrets}, sort_keys=True).encode()).decode()
+    attachments = []
+    for item in store.list_attachments():
+        attachment = store.get_attachment(item.name, project=item.project, environment=item.environment)
+        if attachment is None:
+            continue
+        attachments.append(
+            {
+                "name": attachment.name,
+                "filename": attachment.filename,
+                "content": base64.b64encode(attachment.content).decode(),
+                "project": attachment.project,
+                "environment": attachment.environment,
+                "content_type": attachment.content_type,
+                "notes": attachment.notes,
+            }
+        )
+    encrypted = fernet.encrypt(json.dumps({"secrets": secrets, "attachments": attachments}, sort_keys=True).encode()).decode()
     payload = {
         "format": FORMAT,
         "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
@@ -95,6 +111,19 @@ def import_backup(store: VaultStore, path: str | Path, backup_password: str) -> 
             environment=item.get("environment", "default"),
             expires_at=item.get("expires_at"),
             rotation_url=item.get("rotation_url"),
+        )
+        count += 1
+    for item in data.get("attachments", []):
+        store.add_attachment(
+            AttachmentInput(
+                name=item["name"],
+                filename=item.get("filename", item["name"]),
+                content=base64.b64decode(item["content"]),
+                project=item.get("project", "default"),
+                environment=item.get("environment", "default"),
+                content_type=item.get("content_type", "application/octet-stream"),
+                notes=item.get("notes", ""),
+            )
         )
         count += 1
     return count

@@ -126,6 +126,52 @@ def test_cli_list_filters_by_query_and_tag_without_values(tmp_path, monkeypatch)
     assert "openai-secret" not in audit.output
 
 
+def test_cli_attachment_add_list_and_get_without_leaking_list_output(tmp_path, monkeypatch):
+    db_path = tmp_path / "vault.db"
+    source = tmp_path / "service-account.json"
+    restored = tmp_path / "restored.json"
+    source.write_text('{"private_key":"super-secret-key"}')
+    monkeypatch.setenv("HENRY_VAULT_PASSWORD", "pw")
+    assert runner.invoke(app, ["--db", str(db_path), "init"]).exit_code == 0
+
+    result = runner.invoke(
+        app,
+        [
+            "--db",
+            str(db_path),
+            "attachment-add",
+            "SERVICE_ACCOUNT_JSON",
+            str(source),
+            "--project",
+            "demo",
+            "--env",
+            "prod",
+            "--content-type",
+            "application/json",
+        ],
+    )
+    assert result.exit_code == 0
+    assert "Saved attachment SERVICE_ACCOUNT_JSON" in result.output
+    assert "super-secret-key" not in result.output
+
+    result = runner.invoke(app, ["--db", str(db_path), "attachment-list", "--project", "demo", "--env", "prod"])
+    assert result.exit_code == 0
+    assert "SERVICE_ACCOUNT_JSON" in result.output
+    assert "service-account.json" in result.output
+    assert "super-secret-key" not in result.output
+
+    result = runner.invoke(app, ["--db", str(db_path), "attachment-get", "SERVICE_ACCOUNT_JSON", str(restored), "--project", "demo", "--env", "prod"])
+    assert result.exit_code == 0
+    assert restored.read_text() == '{"private_key":"super-secret-key"}'
+    assert "super-secret-key" not in result.output
+
+    audit = runner.invoke(app, ["--db", str(db_path), "audit", "--limit", "20"])
+    assert audit.exit_code == 0
+    assert "attachment.add" in audit.output
+    assert "attachment.get" in audit.output
+    assert "super-secret-key" not in audit.output
+
+
 def test_cli_audit_lists_recent_events(tmp_path, monkeypatch):
     db_path = tmp_path / "vault.db"
     monkeypatch.setenv("HENRY_VAULT_PASSWORD", "pw")
@@ -304,4 +350,83 @@ def test_cli_profile_set_list_and_doctor_missing_required_secret(tmp_path, monke
     result = runner.invoke(app, ["--db", str(db_path), "doctor", "--project", "demo", "--env", "prod"])
     assert result.exit_code == 1
     assert "missing_required_secret demo/prod DATABASE_URL" in result.output
+    assert "secret-value" not in result.output
+
+
+def test_cli_run_refuses_missing_required_profile_secret_without_starting_command(tmp_path, monkeypatch):
+    db_path = tmp_path / "vault.db"
+    monkeypatch.setenv("HENRY_VAULT_PASSWORD", "pw")
+    assert runner.invoke(app, ["--db", str(db_path), "init"]).exit_code == 0
+    assert runner.invoke(app, ["--db", str(db_path), "add", "API_KEY", "secret-value", "--project", "demo", "--env", "prod"]).exit_code == 0
+    assert runner.invoke(
+        app,
+        [
+            "--db",
+            str(db_path),
+            "profile-set",
+            "--project",
+            "demo",
+            "--env",
+            "prod",
+            "--required",
+            "API_KEY",
+            "--required",
+            "DATABASE_URL",
+        ],
+    ).exit_code == 0
+
+    result = runner.invoke(
+        app,
+        ["--db", str(db_path), "run", "--project", "demo", "--env", "prod", "--", "python3", "-c", "print('COMMAND_RAN')"],
+    )
+
+    assert result.exit_code == 1
+    assert "Missing required secrets for demo/prod: DATABASE_URL" in result.output
+    assert "COMMAND_RAN" not in result.output
+    assert "secret-value" not in result.output
+
+
+def test_cli_run_allow_missing_starts_command_with_partial_profile(tmp_path, monkeypatch):
+    db_path = tmp_path / "vault.db"
+    output_path = tmp_path / "run-output.txt"
+    monkeypatch.setenv("HENRY_VAULT_PASSWORD", "pw")
+    assert runner.invoke(app, ["--db", str(db_path), "init"]).exit_code == 0
+    assert runner.invoke(app, ["--db", str(db_path), "add", "API_KEY", "secret-value", "--project", "demo", "--env", "prod"]).exit_code == 0
+    assert runner.invoke(
+        app,
+        [
+            "--db",
+            str(db_path),
+            "profile-set",
+            "--project",
+            "demo",
+            "--env",
+            "prod",
+            "--required",
+            "API_KEY",
+            "--required",
+            "DATABASE_URL",
+        ],
+    ).exit_code == 0
+
+    result = runner.invoke(
+        app,
+        [
+            "--db",
+            str(db_path),
+            "run",
+            "--project",
+            "demo",
+            "--env",
+            "prod",
+            "--allow-missing",
+            "--",
+            "python3",
+            "-c",
+            f"import os, pathlib; pathlib.Path({str(output_path)!r}).write_text(os.environ['API_KEY'])",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert output_path.read_text() == "secret-value"
     assert "secret-value" not in result.output

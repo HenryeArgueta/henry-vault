@@ -48,6 +48,8 @@ def test_web_login_sets_httponly_cookie_and_cookie_auth_works(tmp_path):
     login = client.post("/api/login", json={"password": "pw"})
 
     assert login.status_code == 200
+    csrf_token = login.json()["csrf_token"]
+    assert csrf_token
     cookie_header = login.headers["set-cookie"]
     assert "hv_session=" in cookie_header
     assert "HttpOnly" in cookie_header
@@ -57,11 +59,28 @@ def test_web_login_sets_httponly_cookie_and_cookie_auth_works(tmp_path):
     assert listed.status_code == 200
     assert listed.json()[0]["name"] == "TOKEN"
 
-    logout = client.post("/api/logout")
+    missing_csrf = client.post("/api/logout")
+    assert missing_csrf.status_code == 403
+
+    logout = client.post("/api/logout", headers={"X-CSRF-Token": csrf_token})
     assert logout.status_code == 200
 
     denied = client.get("/api/secrets", params={"project": "demo", "environment": "dev"})
     assert denied.status_code == 401
+
+
+def test_web_bearer_logout_does_not_require_csrf_header(tmp_path):
+    db_path = tmp_path / "vault.db"
+    store = VaultStore(db_path)
+    store.init("pw")
+
+    client = TestClient(create_app(db_path))
+    login = client.post("/api/login", json={"password": "pw"})
+    token = login.json()["token"]
+
+    logout = client.post("/api/logout", headers={"Authorization": f"Bearer {token}"})
+
+    assert logout.status_code == 200
 
 
 def test_web_login_rate_limits_failed_attempts(tmp_path):
@@ -141,3 +160,7 @@ def test_web_index_includes_doctor_and_audit_controls(tmp_path):
     assert "Audit" in response.text
     assert "/api/doctor" in response.text
     assert "/api/audit" in response.text
+    assert 'id="doctor-issues"' in response.text
+    assert 'id="audit-events"' in response.text
+    assert 'id="doctor"' not in response.text
+    assert 'id="audit"' not in response.text

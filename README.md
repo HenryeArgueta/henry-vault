@@ -13,7 +13,8 @@ Secret values are encrypted at rest with Fernet. The vault encryption key is der
 - List and filter secret metadata without printing secret values.
 - Reveal a secret only after unlocking with the master password.
 - Export project/environment secrets as shell `export` lines.
-- Run commands with secrets injected into the process environment.
+- Run commands with secrets injected into the process environment, with required-profile preflight checks.
+- Store encrypted file attachments such as service account JSON, certs, private keys, and recovery codes.
 - Export/import encrypted backup bundles with a separate backup password.
 - Prune old Henry Vault backup bundles safely with dry-run by default.
 - Scan repos for likely leaked secrets and known vault secret values.
@@ -59,7 +60,25 @@ hv list --project discord-bot --env prod --query api --tag ai
 hv get OPENAI_API_KEY --project discord-bot --env prod
 hv export-env --project discord-bot --env prod
 hv run --project discord-bot --env prod -- python bot.py
+# Use this only when you intentionally want to run despite missing profile requirements:
+hv run --project discord-bot --env prod --allow-missing -- python bot.py
 ```
+
+## Encrypted file attachments
+
+Use attachments for sensitive files that should stay encrypted at rest, such as service account JSON, certificates, private keys, and recovery codes.
+
+```bash
+hv attachment-add SERVICE_ACCOUNT_JSON ./service-account.json \
+  --project discord-bot \
+  --env prod \
+  --content-type application/json
+
+hv attachment-list --project discord-bot --env prod
+hv attachment-get SERVICE_ACCOUNT_JSON ./service-account.restored.json --project discord-bot --env prod
+```
+
+`attachment-list` prints metadata only. Attachment contents are encrypted in the vault database and included inside encrypted backup bundles.
 
 Use an isolated test database:
 
@@ -136,7 +155,7 @@ hv profile-set \
 hv profile-list --project discord-bot
 ```
 
-Profiles store required secret names only, not secret values. `hv doctor --project ... --env ...` uses them to flag missing deployment requirements before you start a service.
+Profiles store required secret names only, not secret values. `hv doctor --project ... --env ...` uses them to flag missing deployment requirements before you start a service. `hv run --project ... --env ...` also refuses to start when the exact project/environment profile is missing required secrets; pass `--allow-missing` only for intentional break-glass runs.
 
 Delete a profile when it is no longer needed:
 
@@ -256,36 +275,58 @@ Then open:
 http://127.0.0.1:8787
 ```
 
-The web UI unlocks via `/api/login`, stores the browser session in a short-lived HttpOnly `hv_session` cookie, and supports `/api/logout`. API clients can still use the returned bearer token in the `Authorization` header. Repeated failed login attempts are rate-limited in memory.
+The web UI unlocks via `/api/login`, stores the browser session in a short-lived HttpOnly `hv_session` cookie, and supports `/api/logout`. Login also returns a per-session CSRF token; the browser sends it as `X-CSRF-Token` for cookie-authenticated unsafe requests. API clients can still use the returned bearer token in the `Authorization` header. Repeated failed login attempts are rate-limited in memory.
 
-The dashboard includes buttons for listing secret metadata, running doctor checks, and viewing sanitized audit events.
+The dashboard includes buttons for listing secret metadata, running doctor checks, and viewing sanitized audit events. Doctor issues and audit events render as tables instead of raw JSON.
 
-Important: keep this local-only for now. Do not expose it to the public internet without TLS, CSRF protection, stronger rate limiting, and network controls such as Tailscale, WireGuard, or Cloudflare Access.
+Important: keep this local-only by default. Do not expose it to the public internet without TLS, stronger rate limiting, and network controls such as Tailscale, WireGuard, or Cloudflare Access.
 
 ## API examples
 
 ```bash
 curl http://127.0.0.1:8787/api/health
 
-curl -X POST http://127.0.0.1:8787/api/login \
+LOGIN_JSON=$(curl -s -X POST http://127.0.0.1:8787/api/login \
   -H 'Content-Type: application/json' \
-  -d '{"password": "your-master-password"}'
+  -d '{"password": "your-master-password"}')
+TOKEN=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])' <<< "$LOGIN_JSON")
+CSRF_TOKEN=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["csrf_token"])' <<< "$LOGIN_JSON")
 
 curl "http://127.0.0.1:8787/api/secrets?project=discord-bot&environment=prod" \
-  -H "Authorization: Bearer <TOKEN>"
+  -H "Authorization: Bearer $TOKEN"
 
 curl "http://127.0.0.1:8787/api/secrets/reveal?name=OPENAI_API_KEY&project=discord-bot&environment=prod" \
-  -H "Authorization: Bearer <TOKEN>"
+  -H "Authorization: Bearer $TOKEN"
 
 curl "http://127.0.0.1:8787/api/doctor?project=discord-bot&environment=prod" \
-  -H "Authorization: Bearer <TOKEN>"
+  -H "Authorization: Bearer $TOKEN"
 
 curl "http://127.0.0.1:8787/api/audit?limit=25" \
-  -H "Authorization: Bearer <TOKEN>"
+  -H "Authorization: Bearer $TOKEN"
 
 curl -X POST http://127.0.0.1:8787/api/logout \
-  -H "Authorization: Bearer <TOKEN>"
+  -H "Authorization: Bearer $TOKEN"
 ```
+
+Cookie-authenticated browser requests use `X-CSRF-Token`; bearer-token API requests do not need the CSRF header.
+
+## Install/update with pipx or a GitHub release
+
+From a local checkout:
+
+```bash
+pipx install /home/henry/.openclaw/workspace/henry-vault
+pipx upgrade henry-vault
+```
+
+From GitHub, replace `OWNER/REPO` with the private repository path:
+
+```bash
+pipx install 'git+https://github.com/OWNER/REPO.git'
+pipx upgrade henry-vault
+```
+
+Tagged releases are built by `.github/workflows/release.yml`. Push a tag like `v0.2.0` to run tests, build the wheel/source distribution, and attach `dist/*` to a GitHub release.
 
 ## Tests
 
@@ -299,15 +340,16 @@ This is a useful local-first vault, not a hardened team vault yet.
 
 Good defaults already included:
 
-- encrypted secret values at rest
+- encrypted secret values and attachment contents at rest
 - Argon2id key derivation
 - per-vault salt
 - database file chmod `0600`
 - web server defaults to `127.0.0.1`
 - list operations hide secret values
 - scanner output masks secrets
-- backup bundles encrypt plaintext values
+- backup bundles encrypt plaintext values and attachment contents
 - web UI uses short-lived HttpOnly browser sessions plus bearer-token API compatibility
+- web UI requires per-session CSRF tokens for cookie-authenticated unsafe requests
 - web login has in-memory failed-attempt lockout
 - web UI avoids sending the master password on every reveal/list call after login
 - audit log avoids storing secret values
@@ -316,6 +358,5 @@ Good defaults already included:
 Future hardening ideas:
 
 - passkeys/WebAuthn or YubiKey unlock
-- CSRF protection for non-local deployments
 - team sharing with per-secret access control
-- packaged release via pipx or a private GitHub release
+- signed release artifacts and published checksums

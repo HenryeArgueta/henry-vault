@@ -48,6 +48,36 @@ class Secret(SecretMetadata):
 
 
 @dataclass(frozen=True)
+class AttachmentInput:
+    name: str
+    filename: str
+    content: bytes
+    project: str = "default"
+    environment: str = "default"
+    content_type: str = "application/octet-stream"
+    notes: str = ""
+
+
+@dataclass(frozen=True)
+class AttachmentMetadata:
+    id: int
+    name: str
+    filename: str
+    project: str
+    environment: str
+    content_type: str
+    notes: str
+    size: int
+    created_at: str
+    updated_at: str
+
+
+@dataclass(frozen=True)
+class Attachment(AttachmentMetadata):
+    content: bytes = b""
+
+
+@dataclass(frozen=True)
 class AuditEvent:
     id: int
     action: str
@@ -180,6 +210,76 @@ class VaultStore:
         with self._connect() as conn:
             cur = conn.execute("DELETE FROM secrets WHERE name=? AND project=? AND environment=?", (name, project, environment))
         return cur.rowcount > 0
+
+    def add_attachment(self, attachment: AttachmentInput) -> None:
+        fernet = self._require_unlocked()
+        now = self._now()
+        encrypted_content = fernet.encrypt(attachment.content).decode()
+        with self._connect() as conn:
+            self._migrate_schema(conn)
+            conn.execute(
+                """
+                INSERT INTO attachments(name, filename, project, environment, encrypted_content, content_type, notes, size, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(name, project, environment) DO UPDATE SET
+                    filename=excluded.filename,
+                    encrypted_content=excluded.encrypted_content,
+                    content_type=excluded.content_type,
+                    notes=excluded.notes,
+                    size=excluded.size,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    attachment.name,
+                    attachment.filename,
+                    attachment.project,
+                    attachment.environment,
+                    encrypted_content,
+                    attachment.content_type,
+                    attachment.notes,
+                    len(attachment.content),
+                    now,
+                    now,
+                ),
+            )
+
+    def list_attachments(self, project: str | None = None, environment: str | None = None) -> list[AttachmentMetadata]:
+        self._require_unlocked()
+        clauses = []
+        params = []
+        if project is not None:
+            clauses.append("project=?")
+            params.append(project)
+        if environment is not None:
+            clauses.append("environment=?")
+            params.append(environment)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._connect() as conn:
+            self._migrate_schema(conn)
+            rows = conn.execute(
+                f"""
+                SELECT id, name, filename, project, environment, content_type, notes, size, created_at, updated_at
+                FROM attachments {where} ORDER BY project, environment, name
+                """,
+                params,
+            ).fetchall()
+        return [self._row_to_attachment_metadata(row) for row in rows]
+
+    def get_attachment(self, name: str, project: str = "default", environment: str = "default") -> Attachment | None:
+        fernet = self._require_unlocked()
+        with self._connect() as conn:
+            self._migrate_schema(conn)
+            row = conn.execute(
+                """
+                SELECT id, name, filename, project, environment, encrypted_content, content_type, notes, size, created_at, updated_at
+                FROM attachments WHERE name=? AND project=? AND environment=?
+                """,
+                (name, project, environment),
+            ).fetchone()
+        if row is None:
+            return None
+        content = fernet.decrypt(row["encrypted_content"].encode())
+        return Attachment(content=content, **self._row_to_attachment_metadata(row).__dict__)
 
     def export_env(self, project: str | None = None, environment: str | None = None) -> str:
         env = self.secrets_dict(project=project, environment=environment)
@@ -398,6 +498,20 @@ class VaultStore:
                 updated_at TEXT NOT NULL,
                 PRIMARY KEY(project, environment)
             );
+            CREATE TABLE IF NOT EXISTS attachments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                filename TEXT NOT NULL,
+                project TEXT NOT NULL DEFAULT 'default',
+                environment TEXT NOT NULL DEFAULT 'default',
+                encrypted_content TEXT NOT NULL,
+                content_type TEXT NOT NULL DEFAULT 'application/octet-stream',
+                notes TEXT NOT NULL DEFAULT '',
+                size INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(name, project, environment)
+            );
             """
         )
 
@@ -463,6 +577,20 @@ class VaultStore:
     def _row_to_secret(self, row: sqlite3.Row, fernet: Fernet) -> Secret:
         value = fernet.decrypt(row["encrypted_value"].encode()).decode()
         return Secret(value=value, **self._row_to_metadata(row).__dict__)
+
+    def _row_to_attachment_metadata(self, row: sqlite3.Row) -> AttachmentMetadata:
+        return AttachmentMetadata(
+            id=int(row["id"]),
+            name=str(row["name"]),
+            filename=str(row["filename"]),
+            project=str(row["project"]),
+            environment=str(row["environment"]),
+            content_type=str(row["content_type"]),
+            notes=str(row["notes"]),
+            size=int(row["size"]),
+            created_at=str(row["created_at"]),
+            updated_at=str(row["updated_at"]),
+        )
 
     def _now(self) -> str:
         return datetime.now(UTC).isoformat(timespec="seconds")

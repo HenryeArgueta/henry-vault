@@ -3,7 +3,7 @@ import os
 import pytest
 
 from henry_vault.errors import VaultAlreadyExists, VaultLocked
-from henry_vault.store import SecretInput, VaultStore
+from henry_vault.store import AttachmentInput, SecretInput, VaultStore
 
 
 def test_init_add_get_list_delete_secret_round_trip(tmp_path):
@@ -90,6 +90,40 @@ def test_list_secrets_filters_by_name_query_and_tags_without_values(tmp_path):
 
     assert [item.name for item in results] == ["OPENAI_API_KEY"]
     assert not hasattr(results[0], "value")
+
+
+def test_attachment_round_trip_encrypts_file_content_at_rest(tmp_path):
+    db_path = tmp_path / "vault.db"
+    store = VaultStore(db_path)
+    store.init("pw")
+    store.unlock("pw")
+
+    store.add_attachment(
+        AttachmentInput(
+            name="SERVICE_ACCOUNT_JSON",
+            filename="service-account.json",
+            content=b'{"private_key":"super-secret-key"}',
+            project="demo",
+            environment="prod",
+            content_type="application/json",
+            notes="gcp service account",
+        )
+    )
+
+    raw_db = db_path.read_bytes()
+    assert b"super-secret-key" not in raw_db
+    assert b"SERVICE_ACCOUNT_JSON" in raw_db
+
+    metadata = store.list_attachments(project="demo", environment="prod")
+    assert len(metadata) == 1
+    assert metadata[0].name == "SERVICE_ACCOUNT_JSON"
+    assert metadata[0].filename == "service-account.json"
+    assert metadata[0].size == len(b'{"private_key":"super-secret-key"}')
+    assert not hasattr(metadata[0], "content")
+
+    attachment = store.get_attachment("SERVICE_ACCOUNT_JSON", project="demo", environment="prod")
+    assert attachment.content == b'{"private_key":"super-secret-key"}'
+    assert attachment.content_type == "application/json"
 
 
 def test_init_refuses_to_overwrite_existing_vault(tmp_path):
