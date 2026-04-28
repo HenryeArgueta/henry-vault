@@ -59,6 +59,15 @@ class AuditEvent:
     created_at: str
 
 
+@dataclass(frozen=True)
+class ProjectProfile:
+    project: str
+    environment: str
+    required_secrets: list[str]
+    notes: str
+    updated_at: str
+
+
 class VaultStore:
     def __init__(self, db_path: str | Path = DEFAULT_DB_PATH):
         self.db_path = Path(db_path).expanduser()
@@ -218,6 +227,68 @@ class VaultStore:
             )
         return cur.rowcount > 0
 
+    def set_project_profile(
+        self,
+        project: str,
+        environment: str,
+        required_secrets: list[str],
+        notes: str = "",
+    ) -> None:
+        self._require_unlocked()
+        normalized = sorted(dict.fromkeys(name.strip() for name in required_secrets if name.strip()))
+        now = self._now()
+        with self._connect() as conn:
+            self._migrate_schema(conn)
+            conn.execute(
+                """
+                INSERT INTO project_profiles(project, environment, required_secrets, notes, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(project, environment) DO UPDATE SET
+                    required_secrets=excluded.required_secrets,
+                    notes=excluded.notes,
+                    updated_at=excluded.updated_at
+                """,
+                (project, environment, json.dumps(normalized), notes, now),
+            )
+
+    def list_project_profiles(self, project: str | None = None, environment: str | None = None) -> list[ProjectProfile]:
+        self._require_unlocked()
+        clauses = []
+        params: list[object] = []
+        if project is not None:
+            clauses.append("project=?")
+            params.append(project)
+        if environment is not None:
+            clauses.append("environment=?")
+            params.append(environment)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._connect() as conn:
+            self._migrate_schema(conn)
+            rows = conn.execute(
+                f"""
+                SELECT project, environment, required_secrets, notes, updated_at
+                FROM project_profiles {where} ORDER BY project, environment
+                """,
+                params,
+            ).fetchall()
+        return [
+            ProjectProfile(
+                project=str(row["project"]),
+                environment=str(row["environment"]),
+                required_secrets=json.loads(row["required_secrets"] or "[]"),
+                notes=str(row["notes"]),
+                updated_at=str(row["updated_at"]),
+            )
+            for row in rows
+        ]
+
+    def delete_project_profile(self, project: str, environment: str) -> bool:
+        self._require_unlocked()
+        with self._connect() as conn:
+            self._migrate_schema(conn)
+            cur = conn.execute("DELETE FROM project_profiles WHERE project=? AND environment=?", (project, environment))
+        return cur.rowcount > 0
+
     def record_audit(
         self,
         action: str,
@@ -305,6 +376,14 @@ class VaultStore:
                 status TEXT NOT NULL DEFAULT 'success',
                 message TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS project_profiles (
+                project TEXT NOT NULL,
+                environment TEXT NOT NULL,
+                required_secrets TEXT NOT NULL DEFAULT '[]',
+                notes TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(project, environment)
             );
             """
         )

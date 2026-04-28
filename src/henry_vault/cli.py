@@ -239,6 +239,48 @@ def rotate_secret(
     typer.echo(f"Rotated {name} [{project}/{env}]")
 
 
+@app.command("profile-set")
+def profile_set(
+    ctx: typer.Context,
+    project: ProjectOpt = "default",
+    env: EnvOpt = "default",
+    required: Annotated[list[str], typer.Option("--required", help="Required secret name for this project/env")] = [],
+    notes: Annotated[str, typer.Option("--notes", help="Notes for this profile")] = "",
+) -> None:
+    """Create or replace a project/environment required-secret profile."""
+    store = _unlock(ctx.obj["db"])
+    store.set_project_profile(project, env, required_secrets=list(required), notes=notes)
+    store.record_audit("profile.set", project=project, environment=env, message=f"required_count={len(set(required))}")
+    typer.echo(f"Saved profile {project}/{env}")
+
+
+@app.command("profile-list")
+def profile_list(
+    ctx: typer.Context,
+    project: Annotated[Optional[str], typer.Option("--project", help="Only list this project")] = None,
+    env: Annotated[Optional[str], typer.Option("--env", help="Only list this environment")] = None,
+) -> None:
+    """List project/environment required-secret profiles."""
+    store = _unlock(ctx.obj["db"])
+    profiles = store.list_project_profiles(project=project, environment=env)
+    store.record_audit("profile.list", project=project, environment=env, message=f"count={len(profiles)}")
+    if not profiles:
+        typer.echo("No profiles found.")
+        return
+    for profile in profiles:
+        required = ",".join(profile.required_secrets)
+        typer.echo(f"{profile.project}/{profile.environment} required=[{required}] updated={profile.updated_at}")
+
+
+@app.command("profile-delete")
+def profile_delete(ctx: typer.Context, project: ProjectOpt = "default", env: EnvOpt = "default") -> None:
+    """Delete one project/environment profile."""
+    store = _unlock(ctx.obj["db"])
+    deleted = store.delete_project_profile(project, env)
+    store.record_audit("profile.delete", project=project, environment=env, status="success" if deleted else "not_found")
+    typer.echo("Deleted" if deleted else "Not found")
+
+
 @app.command("doctor")
 def doctor(
     ctx: typer.Context,

@@ -46,6 +46,20 @@ def doctor_report(
                 issues.append(_issue("expiring_soon", "warning", item, f"Expires on {item.expires_at}"))
         if not item.rotation_url:
             issues.append(_issue("missing_rotation_url", "info", item, "No rotation URL/instructions set"))
+    for profile in store.list_project_profiles(project=project, environment=environment):
+        existing = {item.name for item in store.list_secrets(project=profile.project, environment=profile.environment)}
+        for required in profile.required_secrets:
+            if required not in existing:
+                issues.append(
+                    DoctorIssue(
+                        code="missing_required_secret",
+                        severity="critical",
+                        secret_name=required,
+                        project=profile.project,
+                        environment=profile.environment,
+                        message="Required by project profile but not found in vault",
+                    )
+                )
     return DoctorReport(issues=issues)
 
 

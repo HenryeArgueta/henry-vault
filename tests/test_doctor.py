@@ -52,3 +52,18 @@ def test_doctor_report_filters_by_project_and_environment(tmp_path):
     assert "BAD" in names
     assert "OTHER" not in names
     assert "DEV" not in names
+
+
+def test_doctor_report_flags_missing_required_profile_secrets(tmp_path):
+    store = VaultStore(tmp_path / "vault.db")
+    store.init("pw")
+    store.unlock("pw")
+    now = datetime(2026, 4, 28, tzinfo=UTC)
+    store.set_project_profile("demo", "prod", required_secrets=["API_KEY", "DATABASE_URL"])
+    store.add_secret(SecretInput(name="API_KEY", value="secret", project="demo", environment="prod"))
+
+    report = doctor_report(store, now=now, project="demo", environment="prod")
+
+    issues = {(issue.code, issue.secret_name, issue.project, issue.environment) for issue in report.issues}
+    assert ("missing_required_secret", "DATABASE_URL", "demo", "prod") in issues
+    assert ("missing_required_secret", "API_KEY", "demo", "prod") not in issues

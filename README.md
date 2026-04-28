@@ -20,6 +20,7 @@ Secret values are encrypted at rest with Fernet. The vault encryption key is der
 - Record audit events for unlocks, adds, gets, lists, scans, web logins, and web reveals.
 - Track rotation metadata: expiry date and rotation URL/instructions.
 - Rotate existing secrets without leaking old or new values in output/audit logs.
+- Define project/environment profiles with required secret manifests.
 - `doctor` can focus on a project and/or environment.
 - Install a user-level `hv` symlink.
 - Emit a cron-compatible encrypted backup command.
@@ -50,6 +51,7 @@ export HENRY_VAULT_PASSWORD='choose...word'
 hv init
 hv add OPENAI_API_KEY 'sk-your-key' --project discord-bot --env prod --tag ai
 hv rotate OPENAI_API_KEY 'sk-new-key' --project discord-bot --env prod --expires-at 2027-05-01 --rotation-url 'https://platform.example/keys'
+hv profile-set --project discord-bot --env prod --required OPENAI_API_KEY --required DISCORD_TOKEN
 hv list --project discord-bot --env prod
 hv get OPENAI_API_KEY --project discord-bot --env prod
 hv export-env --project discord-bot --env prod
@@ -94,12 +96,37 @@ Events include actions like:
 - `secret.list`
 - `secret.rotate`
 - `secret.metadata`
+- `profile.set`
+- `profile.list`
+- `profile.delete`
 - `scan.run`
 - `web.login`
 - `web.secret.list`
 - `web.secret.reveal`
 
-## Doctor checks and rotation metadata
+## Doctor checks and project profiles
+
+Define the required secrets for a project/environment:
+
+```bash
+hv profile-set \
+  --project discord-bot \
+  --env prod \
+  --required DISCORD_TOKEN \
+  --required OPENAI_API_KEY \
+  --required DATABASE_URL \
+  --notes 'Production Discord bot runtime requirements'
+
+hv profile-list --project discord-bot
+```
+
+Profiles store required secret names only, not secret values. `hv doctor --project ... --env ...` uses them to flag missing deployment requirements before you start a service.
+
+Delete a profile when it is no longer needed:
+
+```bash
+hv profile-delete --project discord-bot --env prod
+```
 
 Set metadata without changing the value:
 
@@ -133,6 +160,7 @@ hv doctor --project discord-bot --env prod
 
 Doctor flags:
 
+- missing required secrets from project profiles
 - expired secrets
 - secrets expiring soon
 - missing expiry dates

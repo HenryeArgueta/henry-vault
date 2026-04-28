@@ -230,3 +230,38 @@ def test_cli_doctor_filters_project_and_env(tmp_path, monkeypatch):
     assert "BAD" in result.output
     assert "OTHER" not in result.output
     assert "DEV" not in result.output
+
+
+def test_cli_profile_set_list_and_doctor_missing_required_secret(tmp_path, monkeypatch):
+    db_path = tmp_path / "vault.db"
+    monkeypatch.setenv("HENRY_VAULT_PASSWORD", "pw")
+    assert runner.invoke(app, ["--db", str(db_path), "init"]).exit_code == 0
+    assert runner.invoke(app, ["--db", str(db_path), "add", "API_KEY", "secret-value", "--project", "demo", "--env", "prod"]).exit_code == 0
+
+    result = runner.invoke(
+        app,
+        [
+            "--db",
+            str(db_path),
+            "profile-set",
+            "--project",
+            "demo",
+            "--env",
+            "prod",
+            "--required",
+            "API_KEY",
+            "--required",
+            "DATABASE_URL",
+        ],
+    )
+    assert result.exit_code == 0
+    assert "Saved profile demo/prod" in result.output
+
+    result = runner.invoke(app, ["--db", str(db_path), "profile-list"])
+    assert result.exit_code == 0
+    assert "demo/prod required=[API_KEY,DATABASE_URL]" in result.output
+
+    result = runner.invoke(app, ["--db", str(db_path), "doctor", "--project", "demo", "--env", "prod"])
+    assert result.exit_code == 1
+    assert "missing_required_secret demo/prod DATABASE_URL" in result.output
+    assert "secret-value" not in result.output
