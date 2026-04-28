@@ -15,6 +15,7 @@ Secret values are encrypted at rest with Fernet. The vault encryption key is der
 - Export project/environment secrets as shell `export` lines.
 - Run commands with secrets injected into the process environment.
 - Export/import encrypted backup bundles with a separate backup password.
+- Prune old Henry Vault backup bundles safely with dry-run by default.
 - Scan repos for likely leaked secrets and known vault secret values.
 - Start a local FastAPI web UI/API with short-lived HttpOnly browser sessions and bearer-token API compatibility.
 - Record audit events for unlocks, adds, gets, lists, scans, web logins, and web reveals.
@@ -180,6 +181,13 @@ For automation/testing, you can pass the backup password directly:
 ```bash
 hv backup-export /tmp/backup.hv.json --backup-password 'strong-backup-password'
 hv backup-import /tmp/backup.hv.json --backup-password 'strong-backup-password'
+```
+
+Prune old backup bundles safely. This only considers valid Henry Vault `*.hv.json` backup files and runs as a dry run unless `--delete` is passed:
+
+```bash
+hv backup-prune ~/backups --keep-days 30
+hv backup-prune ~/backups --keep-days 30 --delete
 ```
 
 Emit a cron-compatible backup command using separate files for vault unlock and backup encryption passwords:

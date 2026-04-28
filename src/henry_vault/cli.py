@@ -7,7 +7,7 @@ from typing import Annotated, Optional
 
 import typer
 
-from .backup import export_backup, import_backup
+from .backup import export_backup, import_backup, prune_backups
 from .doctor import doctor_report
 from .errors import VaultAlreadyExists, VaultError, VaultLocked, VaultNotInitialized
 from .install import backup_schedule_command, install_cli
@@ -160,6 +160,21 @@ def backup_import(
     store = _unlock(ctx.obj["db"])
     count = import_backup(store, path, backup_password=_backup_password(backup_password))
     typer.echo(f"Imported {count} secrets from {path}")
+
+
+@app.command("backup-prune")
+def backup_prune(
+    backup_dir: Path,
+    keep_days: Annotated[int, typer.Option("--keep-days", help="Delete backups older than this many days")] = 30,
+    delete: Annotated[bool, typer.Option("--delete", help="Actually delete files. Without this, performs a dry run.")] = False,
+) -> None:
+    """Prune old Henry Vault backup files safely. Dry-run by default."""
+    result = prune_backups(backup_dir, keep_days=keep_days, dry_run=not delete)
+    action = "Deleted" if delete else "Would delete"
+    noun = "backup" if len(result.items) == 1 else "backups"
+    typer.echo(f"{action} {len(result.items)} {noun} older than {keep_days} days")
+    for item in result.items:
+        typer.echo(f"{item.path} age_days={item.age_days}")
 
 
 @app.command("scan")

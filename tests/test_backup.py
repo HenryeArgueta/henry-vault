@@ -1,8 +1,10 @@
 import json
+import os
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from henry_vault.backup import export_backup, import_backup
+from henry_vault.backup import export_backup, import_backup, prune_backups
 from henry_vault.errors import VaultLocked
 from henry_vault.store import SecretInput, VaultStore
 
@@ -56,3 +58,43 @@ def test_backup_import_rejects_wrong_password(tmp_path):
     restored.unlock("new-pw")
     with pytest.raises(VaultLocked):
         import_backup(restored, backup_path, backup_password="wrong")
+
+
+def test_prune_backups_dry_run_reports_only_old_henry_vault_backups(tmp_path):
+    now = datetime(2026, 4, 28, tzinfo=UTC)
+    old_backup = tmp_path / "old.hv.json"
+    recent_backup = tmp_path / "recent.hv.json"
+    old_non_backup = tmp_path / "old.txt"
+    invalid_backup_name = tmp_path / "invalid.hv.json"
+    for path in [old_backup, recent_backup]:
+        path.write_text(json.dumps({"format": "henry-vault-backup-v1"}))
+    old_non_backup.write_text("do not delete")
+    invalid_backup_name.write_text("not json")
+    old_time = (now - timedelta(days=45)).timestamp()
+    recent_time = (now - timedelta(days=2)).timestamp()
+    os.utime(old_backup, (old_time, old_time))
+    os.utime(old_non_backup, (old_time, old_time))
+    os.utime(invalid_backup_name, (old_time, old_time))
+    os.utime(recent_backup, (recent_time, recent_time))
+
+    result = prune_backups(tmp_path, keep_days=30, now=now, dry_run=True)
+
+    assert [item.path for item in result.items] == [old_backup]
+    assert result.deleted_count == 0
+    assert old_backup.exists()
+    assert recent_backup.exists()
+    assert old_non_backup.exists()
+    assert invalid_backup_name.exists()
+
+
+def test_prune_backups_delete_removes_only_reported_backup_files(tmp_path):
+    now = datetime(2026, 4, 28, tzinfo=UTC)
+    old_backup = tmp_path / "old.hv.json"
+    old_backup.write_text(json.dumps({"format": "henry-vault-backup-v1"}))
+    old_time = (now - timedelta(days=45)).timestamp()
+    os.utime(old_backup, (old_time, old_time))
+
+    result = prune_backups(tmp_path, keep_days=30, now=now, dry_run=False)
+
+    assert result.deleted_count == 1
+    assert not old_backup.exists()

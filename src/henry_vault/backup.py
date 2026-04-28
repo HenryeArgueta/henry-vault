@@ -3,8 +3,8 @@ from __future__ import annotations
 import base64
 import json
 import os
-from dataclasses import asdict
-from datetime import UTC, datetime
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from argon2.low_level import Type, hash_secret_raw
@@ -14,6 +14,22 @@ from .errors import VaultLocked
 from .store import SecretInput, VaultStore
 
 FORMAT = "henry-vault-backup-v1"
+
+
+@dataclass(frozen=True)
+class PrunedBackup:
+    path: Path
+    age_days: int
+    deleted: bool
+
+
+@dataclass(frozen=True)
+class BackupPruneResult:
+    items: list[PrunedBackup]
+
+    @property
+    def deleted_count(self) -> int:
+        return sum(1 for item in self.items if item.deleted)
 
 
 def export_backup(store: VaultStore, path: str | Path, backup_password: str) -> None:
@@ -82,6 +98,39 @@ def import_backup(store: VaultStore, path: str | Path, backup_password: str) -> 
         )
         count += 1
     return count
+
+
+def prune_backups(
+    backup_dir: str | Path,
+    keep_days: int,
+    now: datetime | None = None,
+    dry_run: bool = True,
+) -> BackupPruneResult:
+    now = now or datetime.now(UTC)
+    cutoff = now - timedelta(days=keep_days)
+    root = Path(backup_dir)
+    items: list[PrunedBackup] = []
+    for path in sorted(root.glob("*.hv.json")):
+        if not path.is_file() or not _is_henry_vault_backup(path):
+            continue
+        modified = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
+        if modified >= cutoff:
+            continue
+        age_days = max(0, int((now - modified).total_seconds() // 86400))
+        deleted = False
+        if not dry_run:
+            path.unlink()
+            deleted = True
+        items.append(PrunedBackup(path=path, age_days=age_days, deleted=deleted))
+    return BackupPruneResult(items=items)
+
+
+def _is_henry_vault_backup(path: Path) -> bool:
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return False
+    return payload.get("format") == FORMAT
 
 
 def _derive_key(password: str, salt: bytes) -> bytes:

@@ -216,6 +216,23 @@ def test_cli_backup_schedule_command(tmp_path):
     assert "***" not in result.output
 
 
+def test_cli_backup_prune_dry_run_and_delete(tmp_path):
+    old_backup = tmp_path / "old.hv.json"
+    old_backup.write_text('{"format":"henry-vault-backup-v1"}')
+    old_time = 1_700_000_000
+    os.utime(old_backup, (old_time, old_time))
+
+    result = runner.invoke(app, ["backup-prune", str(tmp_path), "--keep-days", "1"])
+    assert result.exit_code == 0
+    assert "Would delete 1 backup" in result.output
+    assert old_backup.exists()
+
+    result = runner.invoke(app, ["backup-prune", str(tmp_path), "--keep-days", "1", "--delete"])
+    assert result.exit_code == 0
+    assert "Deleted 1 backup" in result.output
+    assert not old_backup.exists()
+
+
 def test_cli_doctor_filters_project_and_env(tmp_path, monkeypatch):
     db_path = tmp_path / "vault.db"
     monkeypatch.setenv("HENRY_VAULT_PASSWORD", "pw")
