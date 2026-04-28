@@ -10,7 +10,7 @@ Secret values are encrypted at rest with Fernet. The vault encryption key is der
 - Initialize an encrypted vault.
 - Add/update secrets by name, project, and environment.
 - Import `KEY=VALUE` pairs from `.env` files.
-- List secret metadata without printing secret values.
+- List and filter secret metadata without printing secret values.
 - Reveal a secret only after unlocking with the master password.
 - Export project/environment secrets as shell `export` lines.
 - Run commands with secrets injected into the process environment.
@@ -55,6 +55,7 @@ hv add OPENAI_API_KEY 'sk-your-key' --project discord-bot --env prod --tag ai
 hv rotate OPENAI_API_KEY 'sk-new-key' --project discord-bot --env prod --expires-at 2027-05-01 --rotation-url 'https://platform.example/keys'
 hv profile-set --project discord-bot --env prod --required OPENAI_API_KEY --required DISCORD_TOKEN
 hv list --project discord-bot --env prod
+hv list --project discord-bot --env prod --query api --tag ai
 hv get OPENAI_API_KEY --project discord-bot --env prod
 hv export-env --project discord-bot --env prod
 hv run --project discord-bot --env prod -- python bot.py
@@ -66,6 +67,17 @@ Use an isolated test database:
 hv --db /tmp/henry-vault-test.db init
 hv --db /tmp/henry-vault-test.db add TOKEN secret --project demo --env dev
 ```
+
+## Find secrets safely
+
+`hv list` only prints metadata, never secret values. Use `--query` for a case-insensitive name substring and repeat `--tag` to require one or more tags:
+
+```bash
+hv list --query api
+hv list --project discord-bot --env prod --query token --tag prod --tag discord
+```
+
+These filters are useful when a vault has many project/environment entries but you do not want to reveal values just to locate the right secret.
 
 ## Import a .env file
 

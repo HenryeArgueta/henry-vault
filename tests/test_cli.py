@@ -103,6 +103,29 @@ def test_cli_scan_reports_findings_without_full_secret(tmp_path, monkeypatch):
     assert "known-secret" not in result.output
 
 
+def test_cli_list_filters_by_query_and_tag_without_values(tmp_path, monkeypatch):
+    db_path = tmp_path / "vault.db"
+    monkeypatch.setenv("HENRY_VAULT_PASSWORD", "pw")
+    assert runner.invoke(app, ["--db", str(db_path), "init"]).exit_code == 0
+    assert runner.invoke(app, ["--db", str(db_path), "add", "OPENAI_API_KEY", "openai-secret", "--tag", "prod", "--tag", "ai"]).exit_code == 0
+    assert runner.invoke(app, ["--db", str(db_path), "add", "DISCORD_TOKEN", "discord-secret", "--tag", "prod", "--tag", "discord"]).exit_code == 0
+    assert runner.invoke(app, ["--db", str(db_path), "add", "OPENAI_DEV_KEY", "dev-secret", "--tag", "dev", "--tag", "ai"]).exit_code == 0
+
+    result = runner.invoke(app, ["--db", str(db_path), "list", "--query", "api", "--tag", "prod"])
+
+    assert result.exit_code == 0
+    assert "OPENAI_API_KEY" in result.output
+    assert "DISCORD_TOKEN" not in result.output
+    assert "OPENAI_DEV_KEY" not in result.output
+    assert "openai-secret" not in result.output
+
+    audit = runner.invoke(app, ["--db", str(db_path), "audit", "--limit", "10"])
+    assert audit.exit_code == 0
+    assert "secret.list" in audit.output
+    assert "count=1" in audit.output
+    assert "openai-secret" not in audit.output
+
+
 def test_cli_audit_lists_recent_events(tmp_path, monkeypatch):
     db_path = tmp_path / "vault.db"
     monkeypatch.setenv("HENRY_VAULT_PASSWORD", "pw")

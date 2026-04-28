@@ -141,7 +141,13 @@ class VaultStore:
             return None
         return self._row_to_secret(row, fernet)
 
-    def list_secrets(self, project: str | None = None, environment: str | None = None) -> list[SecretMetadata]:
+    def list_secrets(
+        self,
+        project: str | None = None,
+        environment: str | None = None,
+        query: str | None = None,
+        tags: list[str] | None = None,
+    ) -> list[SecretMetadata]:
         self._require_unlocked()
         clauses = []
         params = []
@@ -151,6 +157,9 @@ class VaultStore:
         if environment is not None:
             clauses.append("environment=?")
             params.append(environment)
+        if query:
+            clauses.append("LOWER(name) LIKE ?")
+            params.append(f"%{query.lower()}%")
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         with self._connect() as conn:
             rows = conn.execute(
@@ -160,7 +169,11 @@ class VaultStore:
                 """,
                 params,
             ).fetchall()
-        return [self._row_to_metadata(row) for row in rows]
+        metadata = [self._row_to_metadata(row) for row in rows]
+        required_tags = set(tags or [])
+        if required_tags:
+            metadata = [item for item in metadata if required_tags.issubset(set(item.tags))]
+        return metadata
 
     def delete_secret(self, name: str, project: str = "default", environment: str = "default") -> bool:
         self._require_unlocked()

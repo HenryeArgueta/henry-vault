@@ -96,11 +96,25 @@ def get_secret(ctx: typer.Context, name: str, project: ProjectOpt = "default", e
 
 
 @app.command("list")
-def list_secrets(ctx: typer.Context, project: Annotated[Optional[str], typer.Option("--project")] = None, env: Annotated[Optional[str], typer.Option("--env")] = None) -> None:
+def list_secrets(
+    ctx: typer.Context,
+    project: Annotated[Optional[str], typer.Option("--project")] = None,
+    env: Annotated[Optional[str], typer.Option("--env")] = None,
+    query: Annotated[Optional[str], typer.Option("--query", help="Case-insensitive secret name substring filter")] = None,
+    tag: Annotated[list[str], typer.Option("--tag", help="Require this tag; repeat for multiple tags")] = [],
+) -> None:
     """List secret metadata without values."""
     store = _unlock(ctx.obj["db"])
-    items = store.list_secrets(project=project, environment=env)
-    store.record_audit("secret.list", project=project, environment=env, message=f"count={len(items)}")
+    items = store.list_secrets(project=project, environment=env, query=query, tags=list(tag))
+    filters = []
+    if query:
+        filters.append(f"query={query}")
+    if tag:
+        filters.append(f"tags={','.join(tag)}")
+    message = f"count={len(items)}"
+    if filters:
+        message = f"{message} {' '.join(filters)}"
+    store.record_audit("secret.list", project=project, environment=env, message=message)
     if not items:
         typer.echo("No secrets found.")
         return

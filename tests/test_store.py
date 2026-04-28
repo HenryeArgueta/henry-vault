@@ -78,6 +78,20 @@ def test_run_env_contains_project_environment_secrets(tmp_path):
     assert "PATH" in env
 
 
+def test_list_secrets_filters_by_name_query_and_tags_without_values(tmp_path):
+    store = VaultStore(tmp_path / "vault.db")
+    store.init("pw")
+    store.unlock("pw")
+    store.add_secret(SecretInput(name="OPENAI_API_KEY", value="openai-secret", tags=["prod", "ai"]))
+    store.add_secret(SecretInput(name="DISCORD_TOKEN", value="discord-secret", tags=["prod", "discord"]))
+    store.add_secret(SecretInput(name="OPENAI_DEV_KEY", value="dev-secret", tags=["dev", "ai"]))
+
+    results = store.list_secrets(query="api", tags=["prod"])
+
+    assert [item.name for item in results] == ["OPENAI_API_KEY"]
+    assert not hasattr(results[0], "value")
+
+
 def test_init_refuses_to_overwrite_existing_vault(tmp_path):
     db_path = tmp_path / "vault.db"
     store = VaultStore(db_path)
