@@ -145,15 +145,18 @@ def test_cli_install_cli_creates_link(tmp_path):
 
 
 def test_cli_backup_schedule_command(tmp_path):
-    password_file = tmp_path / "pw.txt"
+    vault_password_file = tmp_path / "vault-pw.txt"
+    backup_password_file = tmp_path / "backup-pw.txt"
     result = runner.invoke(
         app,
         [
             "backup-schedule-command",
             "--backup-path",
             str(tmp_path / "backup.hv.json"),
-            "--password-file",
-            str(password_file),
+            "--vault-password-file",
+            str(vault_password_file),
+            "--backup-password-file",
+            str(backup_password_file),
             "--hv-executable",
             "/tmp/hv",
         ],
@@ -161,4 +164,6 @@ def test_cli_backup_schedule_command(tmp_path):
 
     assert result.exit_code == 0
     assert "backup-export" in result.output
-    assert str(password_file) in result.output
+    assert str(vault_password_file) in result.output
+    assert str(backup_password_file) in result.output
+    assert "***" not in result.output

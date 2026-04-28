@@ -16,7 +16,7 @@ Secret values are encrypted at rest with Fernet. The vault encryption key is der
 - Run commands with secrets injected into the process environment.
 - Export/import encrypted backup bundles with a separate backup password.
 - Scan repos for likely leaked secrets and known vault secret values.
-- Start a local FastAPI web UI/API with short-lived bearer sessions.
+- Start a local FastAPI web UI/API with short-lived HttpOnly browser sessions and bearer-token API compatibility.
 - Record audit events for unlocks, adds, gets, lists, scans, web logins, and web reveals.
 - Track rotation metadata: expiry date and rotation URL/instructions.
 - Run `doctor` checks for expired, expiring, and under-documented secrets.
@@ -139,19 +139,22 @@ hv backup-export /tmp/backup.hv.json --backup-password 'strong-backup-password'
 hv backup-import /tmp/backup.hv.json --backup-password 'strong-backup-password'
 ```
 
-Emit a cron-compatible backup command:
+Emit a cron-compatible backup command using separate files for vault unlock and backup encryption passwords:
 
 ```bash
 hv backup-schedule-command \
   --backup-path ~/backups/henry-vault-$(date +%F).hv.json \
-  --password-file ~/.henry-vault/backup-password.txt \
+  --vault-password-file ~/.henry-vault/vault-password.txt \
+  --backup-password-file ~/.henry-vault/backup-password.txt \
   --hv-executable ~/.local/bin/hv
 ```
+
+`--password-file` is still accepted as a deprecated shortcut when you intentionally want one file to serve both purposes, but separate files are safer.
 
 Example crontab entry for 2:15 AM daily:
 
 ```cron
-15 2 * * * HENRY_VAULT_PASSWORD="$(cat /home/henry/.henry-vault/backup-password.txt)" /home/henry/.local/bin/hv --db /home/henry/.henry-vault/vault.db backup-export /home/henry/backups/henry-vault-$(date +\%F).hv.json --backup-password "$(cat /home/henry/.henry-vault/backup-password.txt)"
+15 2 * * * HENRY_VAULT_PASSWORD="$(cat /home/henry/.henry-vault/vault-password.txt)" /home/henry/.local/bin/hv --db /home/henry/.henry-vault/vault.db backup-export /home/henry/backups/henry-vault-$(date +\%F).hv.json --backup-password "$(cat /home/henry/.henry-vault/backup-password.txt)"
 ```
 
 ## Scan for leaked secrets
@@ -187,9 +190,9 @@ Then open:
 http://127.0.0.1:8787
 ```
 
-The web UI unlocks via `/api/login` and uses a short-lived in-memory bearer token for follow-up API calls.
+The web UI unlocks via `/api/login`, stores the browser session in a short-lived HttpOnly `hv_session` cookie, and supports `/api/logout`. API clients can still use the returned bearer token in the `Authorization` header. Repeated failed login attempts are rate-limited in memory.
 
-Important: keep this local-only for now. Do not expose it to the public internet without TLS, rate limiting, and network controls such as Tailscale, WireGuard, or Cloudflare Access.
+Important: keep this local-only for now. Do not expose it to the public internet without TLS, CSRF protection, stronger rate limiting, and network controls such as Tailscale, WireGuard, or Cloudflare Access.
 
 ## API examples
 
@@ -198,12 +201,15 @@ curl http://127.0.0.1:8787/api/health
 
 TOKEN=$(curl -s -X POST http://127.0.0.1:8787/api/login \
   -H 'Content-Type: application/json' \
-  -d '{"password":"your-master-password"}' | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')
+  -d '{"password": "your-master-password"}' | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')
 
 curl "http://127.0.0.1:8787/api/secrets?project=discord-bot&environment=prod" \
   -H "Authorization: Bearer $TOKEN"
 
 curl "http://127.0.0.1:8787/api/secrets/reveal?name=OPENAI_API_KEY&project=discord-bot&environment=prod" \
+  -H "Authorization: Bearer $TOKEN"
+
+curl -X POST http://127.0.0.1:8787/api/logout \
   -H "Authorization: Bearer $TOKEN"
 ```
 
@@ -227,6 +233,8 @@ Good defaults already included:
 - list operations hide secret values
 - scanner output masks secrets
 - backup bundles encrypt plaintext values
+- web UI uses short-lived HttpOnly browser sessions plus bearer-token API compatibility
+- web login has in-memory failed-attempt lockout
 - web UI avoids sending the master password on every reveal/list call after login
 - audit log avoids storing secret values
 - doctor reports operational hygiene issues
@@ -234,7 +242,6 @@ Good defaults already included:
 Future hardening ideas:
 
 - passkeys/WebAuthn or YubiKey unlock
-- secure cookie sessions and CSRF protection
-- rate limiting
+- CSRF protection for non-local deployments
 - team sharing with per-secret access control
 - packaged release via pipx or a private GitHub release

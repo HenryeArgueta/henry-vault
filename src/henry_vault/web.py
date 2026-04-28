@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import Cookie, Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
@@ -22,6 +22,15 @@ class LoginRequest(BaseModel):
 class Session:
     password: str
     expires_at: datetime
+
+
+@dataclass
+class FailedLoginState:
+    count: int = 0
+    locked_until: datetime | None = None
+
+
+COOKIE_NAME = "hv_session"
 
 
 HTML = """
@@ -43,30 +52,38 @@ HTML = """
 </head>
 <body>
   <h1>Henry Vault</h1>
-  <p class="muted">Local encrypted secrets dashboard. Unlock once; this tab uses a short-lived local bearer session.</p>
+  <p class="muted">Local encrypted secrets dashboard. Unlock once; this browser uses a short-lived HttpOnly local session cookie.</p>
   <div class="card">
     <input id="password" type="password" placeholder="Master password" />
     <button onclick="login()">Unlock</button>
     <input id="project" placeholder="Project filter" />
     <input id="environment" placeholder="Environment filter" />
     <button onclick="loadSecrets()">List secrets</button>
+    <button onclick="logout()">Logout</button>
   </div>
   <table>
     <thead><tr><th>Project</th><th>Env</th><th>Name</th><th>Tags</th><th>Updated</th><th>Reveal</th></tr></thead>
     <tbody id="rows"></tbody>
   </table>
   <script>
-    let token = null;
+    let unlocked = false;
     async function login() {
       const res = await fetch('/api/login', {method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({password: document.getElementById('password').value})});
-      if (!res.ok) { alert('Unlock failed'); return; }
-      token = (await res.json()).token;
+      if (!res.ok) { alert(res.status === 429 ? 'Too many failed attempts; try again later.' : 'Unlock failed'); return; }
+      await res.json();
+      unlocked = true;
       document.getElementById('password').value = '';
-      alert('Unlocked for this browser tab.');
+      alert('Unlocked for this browser.');
     }
-    function authHeaders() { return {'Authorization': 'Bearer ' + token}; }
+    function authHeaders() { return {}; }
+    async function logout() {
+      await fetch('/api/logout', {method: 'POST'});
+      unlocked = false;
+      document.getElementById('rows').innerHTML = '';
+      alert('Logged out.');
+    }
     async function loadSecrets() {
-      if (!token) { alert('Unlock first'); return; }
+      if (!unlocked) { alert('Unlock first'); return; }
       const params = new URLSearchParams();
       const project = document.getElementById('project').value;
       const environment = document.getElementById('environment').value;
@@ -96,9 +113,15 @@ HTML = """
 """
 
 
-def create_app(db_path: str | Path = DEFAULT_DB_PATH) -> FastAPI:
+def create_app(
+    db_path: str | Path = DEFAULT_DB_PATH,
+    *,
+    max_failed_logins: int = 5,
+    lockout_seconds: int = 60,
+) -> FastAPI:
     app = FastAPI(title="Henry Vault", version="0.2.0")
     sessions: dict[str, Session] = {}
+    failed_logins: dict[str, FailedLoginState] = {}
 
     def store_for_password(password: str) -> VaultStore:
         store = VaultStore(db_path)
@@ -110,10 +133,37 @@ def create_app(db_path: str | Path = DEFAULT_DB_PATH) -> FastAPI:
             raise HTTPException(status_code=404, detail="Vault is not initialized") from exc
         return store
 
-    def store_for_session(authorization: str = Header(default="")) -> VaultStore:
-        scheme, _, token = authorization.partition(" ")
-        if scheme.lower() != "bearer" or not token:
-            raise HTTPException(status_code=401, detail="Missing bearer token")
+    def client_key(request: Request) -> str:
+        if request.client is None:
+            return "unknown"
+        return request.client.host
+
+    def ensure_not_locked_out(key: str) -> None:
+        state = failed_logins.get(key)
+        now = datetime.now(UTC)
+        if state and state.locked_until and state.locked_until > now:
+            raise HTTPException(status_code=429, detail="Too many failed login attempts; try again later")
+        if state and state.locked_until and state.locked_until <= now:
+            failed_logins.pop(key, None)
+
+    def record_failed_login(key: str) -> None:
+        state = failed_logins.setdefault(key, FailedLoginState())
+        state.count += 1
+        if state.count >= max_failed_logins:
+            state.locked_until = datetime.now(UTC) + timedelta(seconds=lockout_seconds)
+
+    def store_for_session(
+        authorization: str = Header(default=""),
+        hv_session: str | None = Cookie(default=None, alias=COOKIE_NAME),
+    ) -> VaultStore:
+        scheme, _, header_token = authorization.partition(" ")
+        token = ""
+        if scheme.lower() == "bearer" and header_token:
+            token = header_token
+        elif hv_session:
+            token = hv_session
+        if not token:
+            raise HTTPException(status_code=401, detail="Missing session token")
         session = sessions.get(token)
         if session is None or session.expires_at <= datetime.now(UTC):
             sessions.pop(token, None)
@@ -129,13 +179,37 @@ def create_app(db_path: str | Path = DEFAULT_DB_PATH) -> FastAPI:
         return {"ok": True}
 
     @app.post("/api/login")
-    def login(request: LoginRequest) -> dict[str, str | int]:
-        store = store_for_password(request.password)
+    def login(request: Request, response: Response, login_request: LoginRequest) -> dict[str, str | int]:
+        key = client_key(request)
+        ensure_not_locked_out(key)
+        try:
+            store = store_for_password(login_request.password)
+        except HTTPException:
+            record_failed_login(key)
+            raise
+        failed_logins.pop(key, None)
         token = secrets.token_urlsafe(32)
         ttl_seconds = 15 * 60
-        sessions[token] = Session(password=request.password, expires_at=datetime.now(UTC) + timedelta(seconds=ttl_seconds))
+        sessions[token] = Session(password=login_request.password, expires_at=datetime.now(UTC) + timedelta(seconds=ttl_seconds))
+        response.set_cookie(
+            COOKIE_NAME,
+            token,
+            max_age=ttl_seconds,
+            httponly=True,
+            samesite="strict",
+            secure=False,
+        )
         store.record_audit("web.login", status="success")
         return {"token": token, "expires_in": ttl_seconds}
+
+    @app.post("/api/logout")
+    def logout(response: Response, hv_session: str | None = Cookie(default=None, alias=COOKIE_NAME), authorization: str = Header(default="")) -> dict[str, bool]:
+        scheme, _, header_token = authorization.partition(" ")
+        token = header_token if scheme.lower() == "bearer" and header_token else hv_session
+        if token:
+            sessions.pop(token, None)
+        response.delete_cookie(COOKIE_NAME)
+        return {"ok": True}
 
     @app.get("/api/secrets")
     def list_secrets(

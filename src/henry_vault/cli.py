@@ -241,11 +241,23 @@ def install_cli_command(
 def backup_schedule_command_cli(
     ctx: typer.Context,
     backup_path: Annotated[Path, typer.Option("--backup-path", help="Encrypted backup output path")],
-    password_file: Annotated[Path, typer.Option("--password-file", help="File containing vault/backup password")],
+    vault_password_file: Annotated[Optional[Path], typer.Option("--vault-password-file", help="File containing vault unlock password")] = None,
+    backup_password_file: Annotated[Optional[Path], typer.Option("--backup-password-file", help="File containing backup encryption password")] = None,
+    password_file: Annotated[Optional[Path], typer.Option("--password-file", help="Deprecated: use the same file for vault and backup passwords")] = None,
     hv_executable: Annotated[Path, typer.Option("--hv-executable", help="Path to hv executable")] = Path("hv"),
 ) -> None:
     """Print a cron-compatible encrypted backup command."""
-    command = backup_schedule_command(hv_executable=hv_executable, db_path=ctx.obj["db"], backup_path=backup_path, password_file=password_file)
+    vault_file = vault_password_file or password_file
+    backup_file = backup_password_file or password_file
+    if vault_file is None or backup_file is None:
+        raise typer.BadParameter("Provide --vault-password-file and --backup-password-file, or deprecated --password-file")
+    command = backup_schedule_command(
+        hv_executable=hv_executable,
+        db_path=ctx.obj["db"],
+        backup_path=backup_path,
+        vault_password_file=vault_file,
+        backup_password_file=backup_file,
+    )
     typer.echo(command)
 
 

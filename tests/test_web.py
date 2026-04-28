@@ -36,6 +36,48 @@ def test_web_health_list_and_reveal(tmp_path):
     assert denied.status_code == 401
 
 
+def test_web_login_sets_httponly_cookie_and_cookie_auth_works(tmp_path):
+    db_path = tmp_path / "vault.db"
+    store = VaultStore(db_path)
+    store.init("pw")
+    store.unlock("pw")
+    store.add_secret(SecretInput(name="TOKEN", value="secret", project="demo", environment="dev"))
+
+    client = TestClient(create_app(db_path))
+
+    login = client.post("/api/login", json={"password": "pw"})
+
+    assert login.status_code == 200
+    cookie_header = login.headers["set-cookie"]
+    assert "hv_session=" in cookie_header
+    assert "HttpOnly" in cookie_header
+    assert "SameSite=strict" in cookie_header
+
+    listed = client.get("/api/secrets", params={"project": "demo", "environment": "dev"})
+    assert listed.status_code == 200
+    assert listed.json()[0]["name"] == "TOKEN"
+
+    logout = client.post("/api/logout")
+    assert logout.status_code == 200
+
+    denied = client.get("/api/secrets", params={"project": "demo", "environment": "dev"})
+    assert denied.status_code == 401
+
+
+def test_web_login_rate_limits_failed_attempts(tmp_path):
+    db_path = tmp_path / "vault.db"
+    store = VaultStore(db_path)
+    store.init("pw")
+
+    client = TestClient(create_app(db_path, max_failed_logins=2, lockout_seconds=60))
+
+    assert client.post("/api/login", json={"password": "wrong-1"}).status_code == 401
+    assert client.post("/api/login", json={"password": "wrong-2"}).status_code == 401
+    locked = client.post("/api/login", json={"password": "pw"})
+
+    assert locked.status_code == 429
+
+
 def test_web_login_rejects_wrong_password(tmp_path):
     db_path = tmp_path / "vault.db"
     store = VaultStore(db_path)

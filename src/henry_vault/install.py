@@ -21,10 +21,16 @@ def backup_schedule_command(
     hv_executable: str | Path,
     db_path: str | Path,
     backup_path: str | Path,
-    password_file: str | Path,
+    vault_password_file: str | Path,
+    backup_password_file: str | Path,
 ) -> str:
     hv = shlex.quote(str(hv_executable))
     db = shlex.quote(str(db_path))
     backup = shlex.quote(str(backup_path))
-    pw = shlex.quote(str(password_file))
-    return f'HENRY_VAULT_PASSWORD="$(cat {pw})" {hv} --db {db} backup-export {backup} --backup-password "$(cat {pw})"'
+    vault_pw = shlex.quote(str(vault_password_file))
+    backup_pw = shlex.quote(str(backup_password_file))
+    return (
+        f'HENRY_VAULT_PASSWORD="$(cat {vault_pw})" '
+        f"{hv} --db {db} backup-export {backup} "
+        f'--backup-password "$(cat {backup_pw})"'
+    )
