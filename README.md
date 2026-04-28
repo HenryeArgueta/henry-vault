@@ -3,17 +3,20 @@
 Henry Vault is a local-first encrypted secrets manager with both a CLI and a web UI/API.
 
 It stores secrets in an encrypted SQLite database at `~/.henry-vault/vault.db` by default.
-Secret values are encrypted at rest with Fernet. The encryption key is derived from your master password with Argon2id and a per-vault random salt.
+Secret values are encrypted at rest with Fernet. The vault encryption key is derived from your master password with Argon2id and a per-vault random salt.
 
-## MVP features
+## Features
 
 - Initialize an encrypted vault.
 - Add/update secrets by name, project, and environment.
+- Import `KEY=VALUE` pairs from `.env` files.
 - List secret metadata without printing secret values.
 - Reveal a secret only after unlocking with the master password.
 - Export project/environment secrets as shell `export` lines.
 - Run commands with secrets injected into the process environment.
-- Start a local FastAPI web UI/API.
+- Export/import encrypted backup bundles with a separate backup password.
+- Scan repos for likely leaked secrets and known vault secret values.
+- Start a local FastAPI web UI/API with short-lived bearer sessions.
 
 ## Install for local development
 
@@ -45,6 +48,58 @@ hv --db /tmp/henry-vault-test.db init
 hv --db /tmp/henry-vault-test.db add TOKEN secret --project demo --env dev
 ```
 
+## Import a .env file
+
+```bash
+hv import-env /path/to/.env --project discord-bot --env prod --tag imported
+```
+
+Supported syntax:
+
+```text
+KEY=value
+export KEY=value
+QUOTED="hello world"
+SINGLE='hello world'
+```
+
+## Encrypted backups
+
+Backups are encrypted JSON bundles. Use a separate strong backup password.
+
+```bash
+hv backup-export ~/henry-vault-backup.hv.json
+hv backup-import ~/henry-vault-backup.hv.json
+```
+
+For automation/testing, you can pass the backup password directly:
+
+```bash
+hv backup-export /tmp/backup.hv.json --backup-password 'strong-backup-password'
+hv backup-import /tmp/backup.hv.json --backup-password 'strong-backup-password'
+```
+
+## Scan for leaked secrets
+
+Basic pattern scan:
+
+```bash
+hv scan /home/henry/.openclaw/workspace/Discord
+```
+
+Match files against current vault values too:
+
+```bash
+hv scan /home/henry/.openclaw/workspace/Discord --match-vault
+```
+
+Exit codes:
+
+- `0`: no findings
+- `2`: findings detected
+
+The scanner masks secret values in output.
+
 ## Web UI
 
 ```bash
@@ -57,20 +112,24 @@ Then open:
 http://127.0.0.1:8787
 ```
 
-Important: keep this local-only for now. Do not expose it to the public internet without TLS, stronger auth/session handling, rate limiting, and network controls such as Tailscale, WireGuard, or Cloudflare Access.
+The web UI now unlocks via `/api/login` and uses a short-lived in-memory bearer token for follow-up API calls.
+
+Important: keep this local-only for now. Do not expose it to the public internet without TLS, rate limiting, and network controls such as Tailscale, WireGuard, or Cloudflare Access.
 
 ## API examples
 
 ```bash
 curl http://127.0.0.1:8787/api/health
 
-curl -X POST http://127.0.0.1:8787/api/secrets \
+TOKEN=$(curl -s -X POST http://127.0.0.1:8787/api/login \
   -H 'Content-Type: application/json' \
-  -d '{"password":"your-master-password","project":"discord-bot","environment":"prod"}'
+  -d '{"password":"your-master-password"}' | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')
 
-curl -X POST http://127.0.0.1:8787/api/secrets/reveal \
-  -H 'Content-Type: application/json' \
-  -d '{"password":"your-master-password","name":"OPENAI_API_KEY","project":"discord-bot","environment":"prod"}'
+curl "http://127.0.0.1:8787/api/secrets?project=discord-bot&environment=prod" \
+  -H "Authorization: Bearer $TOKEN"
+
+curl "http://127.0.0.1:8787/api/secrets/reveal?name=OPENAI_API_KEY&project=discord-bot&environment=prod" \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
 ## Tests
@@ -81,7 +140,7 @@ curl -X POST http://127.0.0.1:8787/api/secrets/reveal \
 
 ## Current security notes
 
-This is a solid MVP, not a hardened team vault yet.
+This is a useful local-first vault, not a hardened team vault yet.
 
 Good defaults already included:
 
@@ -91,13 +150,15 @@ Good defaults already included:
 - database file chmod `0600`
 - web server defaults to `127.0.0.1`
 - list operations hide secret values
+- scanner output masks secrets
+- backup bundles encrypt plaintext values
+- web UI avoids sending the master password on every reveal/list call after login
 
 Future hardening ideas:
 
 - passkeys/WebAuthn or YubiKey unlock
-- session-based web auth instead of sending password per request
 - audit log
 - secret rotation reminders
-- repo secret scanner
-- backup/export encrypted vault bundle
+- encrypted backup scheduling
 - team sharing with per-secret access control
+- packaging/install script so `hv` is globally available

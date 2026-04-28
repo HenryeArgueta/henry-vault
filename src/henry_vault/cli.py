@@ -7,7 +7,9 @@ from typing import Annotated, Optional
 
 import typer
 
+from .backup import export_backup, import_backup
 from .errors import VaultAlreadyExists, VaultError, VaultLocked, VaultNotInitialized
+from .scanner import scan_path
 from .store import DEFAULT_DB_PATH, SecretInput, VaultStore
 
 app = typer.Typer(help="Henry Vault: encrypted local secrets manager")
@@ -20,6 +22,12 @@ def _password() -> str:
     if password:
         return password
     return getpass.getpass("Master password: ")
+
+
+def _backup_password(value: str | None = None) -> str:
+    if value:
+        return value
+    return getpass.getpass("Backup password: ")
 
 
 def _store(db: Path) -> VaultStore:
@@ -107,6 +115,65 @@ def export_env(ctx: typer.Context, project: Annotated[Optional[str], typer.Optio
     """Print shell export lines for matching secrets."""
     store = _unlock(ctx.obj["db"])
     typer.echo(store.export_env(project=project, environment=env))
+
+
+@app.command("import-env")
+def import_env(
+    ctx: typer.Context,
+    path: Path,
+    project: ProjectOpt = "default",
+    env: EnvOpt = "default",
+    tag: Annotated[list[str], typer.Option("--tag", help="Tag for imported secrets")] = [],
+) -> None:
+    """Import KEY=VALUE pairs from a .env file."""
+    store = _unlock(ctx.obj["db"])
+    imported = store.import_env_file(path, project=project, environment=env, tags=list(tag))
+    typer.echo(f"Imported {len(imported)} secrets into {project}/{env}")
+
+
+@app.command("backup-export")
+def backup_export(
+    ctx: typer.Context,
+    path: Path,
+    backup_password: Annotated[Optional[str], typer.Option("--backup-password", help="Backup encryption password")] = None,
+) -> None:
+    """Export all secrets to an encrypted backup bundle."""
+    store = _unlock(ctx.obj["db"])
+    export_backup(store, path, backup_password=_backup_password(backup_password))
+    typer.echo(f"Encrypted backup written to {path}")
+
+
+@app.command("backup-import")
+def backup_import(
+    ctx: typer.Context,
+    path: Path,
+    backup_password: Annotated[Optional[str], typer.Option("--backup-password", help="Backup encryption password")] = None,
+) -> None:
+    """Import secrets from an encrypted backup bundle into the unlocked vault."""
+    store = _unlock(ctx.obj["db"])
+    count = import_backup(store, path, backup_password=_backup_password(backup_password))
+    typer.echo(f"Imported {count} secrets from {path}")
+
+
+@app.command("scan")
+def scan(
+    ctx: typer.Context,
+    path: Path,
+    match_vault: Annotated[bool, typer.Option("--match-vault", help="Match files against current vault secret values")] = False,
+) -> None:
+    """Scan files for likely leaked secrets without printing full values."""
+    known = None
+    if match_vault:
+        store = _unlock(ctx.obj["db"])
+        known = store.secrets_dict()
+    findings = scan_path(path, known_secret_values=known)
+    if not findings:
+        typer.echo("No findings.")
+        return
+    for finding in findings:
+        matched = f" matched={finding.matched_vault_name}" if finding.matched_vault_name else ""
+        typer.echo(f"{finding.path}:{finding.line} {finding.kind}{matched} {finding.preview}")
+    raise typer.Exit(2)
 
 
 @app.command("run")

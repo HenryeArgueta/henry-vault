@@ -13,6 +13,7 @@ from argon2.low_level import Type, hash_secret_raw
 from cryptography.fernet import Fernet, InvalidToken
 
 from .errors import VaultAlreadyExists, VaultLocked, VaultNotInitialized
+from .envfile import parse_env_file
 
 DEFAULT_DB_PATH = Path.home() / ".henry-vault" / "vault.db"
 
@@ -166,6 +167,18 @@ class VaultStore:
         env = dict(os.environ)
         env.update(self.secrets_dict(project=project, environment=environment))
         return env
+
+    def import_env_file(
+        self,
+        path: str | Path,
+        project: str = "default",
+        environment: str = "default",
+        tags: list[str] | None = None,
+    ) -> list[str]:
+        parsed = parse_env_file(path)
+        for name, value in parsed.items():
+            self.add_secret(SecretInput(name=name, value=value, project=project, environment=environment, tags=tags or []))
+        return sorted(parsed.keys())
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import secrets
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
@@ -11,17 +14,14 @@ from .errors import VaultLocked, VaultNotInitialized
 from .store import DEFAULT_DB_PATH, VaultStore
 
 
-class AuthFilter(BaseModel):
+class LoginRequest(BaseModel):
     password: str
-    project: Optional[str] = None
-    environment: Optional[str] = None
 
 
-class RevealRequest(BaseModel):
+@dataclass
+class Session:
     password: str
-    name: str
-    project: str = "default"
-    environment: str = "default"
+    expires_at: datetime
 
 
 HTML = """
@@ -43,9 +43,10 @@ HTML = """
 </head>
 <body>
   <h1>Henry Vault</h1>
-  <p class="muted">Local encrypted secrets dashboard. Metadata is listed without revealing values.</p>
+  <p class="muted">Local encrypted secrets dashboard. Unlock once; this tab uses a short-lived local bearer session.</p>
   <div class="card">
     <input id="password" type="password" placeholder="Master password" />
+    <button onclick="login()">Unlock</button>
     <input id="project" placeholder="Project filter" />
     <input id="environment" placeholder="Environment filter" />
     <button onclick="loadSecrets()">List secrets</button>
@@ -55,29 +56,39 @@ HTML = """
     <tbody id="rows"></tbody>
   </table>
   <script>
+    let token = null;
+    async function login() {
+      const res = await fetch('/api/login', {method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({password: document.getElementById('password').value})});
+      if (!res.ok) { alert('Unlock failed'); return; }
+      token = (await res.json()).token;
+      document.getElementById('password').value = '';
+      alert('Unlocked for this browser tab.');
+    }
+    function authHeaders() { return {'Authorization': 'Bearer ' + token}; }
     async function loadSecrets() {
-      const body = {
-        password: document.getElementById('password').value,
-        project: document.getElementById('project').value || null,
-        environment: document.getElementById('environment').value || null
-      };
-      const res = await fetch('/api/secrets', {method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body)});
-      if (!res.ok) { alert('Could not unlock/list vault'); return; }
+      if (!token) { alert('Unlock first'); return; }
+      const params = new URLSearchParams();
+      const project = document.getElementById('project').value;
+      const environment = document.getElementById('environment').value;
+      if (project) params.set('project', project);
+      if (environment) params.set('environment', environment);
+      const res = await fetch('/api/secrets?' + params.toString(), {headers: authHeaders()});
+      if (!res.ok) { alert('Could not list vault'); return; }
       const data = await res.json();
       document.getElementById('rows').innerHTML = data.map(s => `
         <tr>
           <td>${s.project}</td><td>${s.environment}</td><td><code>${s.name}</code></td>
           <td>${(s.tags || []).join(', ')}</td><td>${s.updated_at}</td>
-          <td><button onclick="reveal('${s.name}','${s.project}','${s.environment}')">Reveal</button></td>
+          <td><button onclick="reveal('${s.name}','${s.project}','${s.environment}')">Copy</button></td>
         </tr>`).join('');
     }
     async function reveal(name, project, environment) {
-      const body = {password: document.getElementById('password').value, name, project, environment};
-      const res = await fetch('/api/secrets/reveal', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+      const params = new URLSearchParams({name, project, environment});
+      const res = await fetch('/api/secrets/reveal?' + params.toString(), {headers: authHeaders()});
       if (!res.ok) { alert('Reveal failed'); return; }
       const data = await res.json();
       await navigator.clipboard.writeText(data.value).catch(() => {});
-      alert(`${name}: ${data.value}\n\nCopied to clipboard if browser allowed it.`);
+      alert(`${name} copied to clipboard if browser allowed it.`);
     }
   </script>
 </body>
@@ -86,9 +97,10 @@ HTML = """
 
 
 def create_app(db_path: str | Path = DEFAULT_DB_PATH) -> FastAPI:
-    app = FastAPI(title="Henry Vault", version="0.1.0")
+    app = FastAPI(title="Henry Vault", version="0.2.0")
+    sessions: dict[str, Session] = {}
 
-    def unlocked_store(password: str) -> VaultStore:
+    def store_for_password(password: str) -> VaultStore:
         store = VaultStore(db_path)
         try:
             store.unlock(password)
@@ -98,6 +110,16 @@ def create_app(db_path: str | Path = DEFAULT_DB_PATH) -> FastAPI:
             raise HTTPException(status_code=404, detail="Vault is not initialized") from exc
         return store
 
+    def store_for_session(authorization: str = Header(default="")) -> VaultStore:
+        scheme, _, token = authorization.partition(" ")
+        if scheme.lower() != "bearer" or not token:
+            raise HTTPException(status_code=401, detail="Missing bearer token")
+        session = sessions.get(token)
+        if session is None or session.expires_at <= datetime.now(UTC):
+            sessions.pop(token, None)
+            raise HTTPException(status_code=401, detail="Invalid or expired session")
+        return store_for_password(session.password)
+
     @app.get("/", response_class=HTMLResponse)
     def index() -> str:
         return HTML
@@ -106,15 +128,30 @@ def create_app(db_path: str | Path = DEFAULT_DB_PATH) -> FastAPI:
     def health() -> dict[str, bool]:
         return {"ok": True}
 
-    @app.post("/api/secrets")
-    def list_secrets(request: AuthFilter) -> list[dict]:
-        store = unlocked_store(request.password)
-        return [item.__dict__ for item in store.list_secrets(project=request.project, environment=request.environment)]
+    @app.post("/api/login")
+    def login(request: LoginRequest) -> dict[str, str | int]:
+        store_for_password(request.password)
+        token = secrets.token_urlsafe(32)
+        ttl_seconds = 15 * 60
+        sessions[token] = Session(password=request.password, expires_at=datetime.now(UTC) + timedelta(seconds=ttl_seconds))
+        return {"token": token, "expires_in": ttl_seconds}
 
-    @app.post("/api/secrets/reveal")
-    def reveal(request: RevealRequest) -> dict[str, str]:
-        store = unlocked_store(request.password)
-        secret = store.get_secret(request.name, project=request.project, environment=request.environment)
+    @app.get("/api/secrets")
+    def list_secrets(
+        project: Optional[str] = None,
+        environment: Optional[str] = None,
+        store: VaultStore = Depends(store_for_session),
+    ) -> list[dict]:
+        return [item.__dict__ for item in store.list_secrets(project=project, environment=environment)]
+
+    @app.get("/api/secrets/reveal")
+    def reveal(
+        name: str,
+        project: str = "default",
+        environment: str = "default",
+        store: VaultStore = Depends(store_for_session),
+    ) -> dict[str, str]:
+        secret = store.get_secret(name, project=project, environment=environment)
         if secret is None:
             raise HTTPException(status_code=404, detail="Secret not found")
         return {"name": secret.name, "value": secret.value}
