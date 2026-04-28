@@ -1,0 +1,34 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "henry-vault"
+version = "0.1.0"
+description = "Henry Vault: encrypted local secrets manager with CLI and web UI"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "argon2-cffi>=23.1.0",
+  "cryptography>=42.0.0",
+  "fastapi>=0.110.0",
+  "jinja2>=3.1.0",
+  "python-multipart>=0.0.9",
+  "typer>=0.12.0",
+  "uvicorn>=0.29.0",
+]
+
+[project.optional-dependencies]
+test = [
+  "httpx>=0.27.0",
+  "pytest>=8.0.0",
+]
+
+[project.scripts]
+henry-vault = "henry_vault.cli:app"
+hv = "henry_vault.cli:app"
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+pythonpath = ["src"]
