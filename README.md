@@ -18,6 +18,7 @@ Secret values are encrypted at rest with Fernet. The vault encryption key is der
 - Prune old Henry Vault backup bundles safely with dry-run by default.
 - Scan repos for likely leaked secrets and known vault secret values.
 - Start a local FastAPI web UI/API with short-lived HttpOnly browser sessions and bearer-token API compatibility.
+- View doctor issues and sanitized audit events from the web UI/API.
 - Record audit events for unlocks, adds, gets, lists, scans, web logins, and web reveals.
 - Track rotation metadata: expiry date and rotation URL/instructions.
 - Rotate existing secrets without leaking old or new values in output/audit logs.
@@ -104,6 +105,8 @@ Events include actions like:
 - `web.login`
 - `web.secret.list`
 - `web.secret.reveal`
+- `web.doctor`
+- `web.audit.list`
 
 ## Doctor checks and project profiles
 
@@ -243,6 +246,8 @@ http://127.0.0.1:8787
 
 The web UI unlocks via `/api/login`, stores the browser session in a short-lived HttpOnly `hv_session` cookie, and supports `/api/logout`. API clients can still use the returned bearer token in the `Authorization` header. Repeated failed login attempts are rate-limited in memory.
 
+The dashboard includes buttons for listing secret metadata, running doctor checks, and viewing sanitized audit events.
+
 Important: keep this local-only for now. Do not expose it to the public internet without TLS, CSRF protection, stronger rate limiting, and network controls such as Tailscale, WireGuard, or Cloudflare Access.
 
 ## API examples
@@ -250,18 +255,24 @@ Important: keep this local-only for now. Do not expose it to the public internet
 ```bash
 curl http://127.0.0.1:8787/api/health
 
-TOKEN=$(curl -s -X POST http://127.0.0.1:8787/api/login \
+curl -X POST http://127.0.0.1:8787/api/login \
   -H 'Content-Type: application/json' \
-  -d '{"password": "your-master-password"}' | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')
+  -d '{"password": "your-master-password"}'
 
 curl "http://127.0.0.1:8787/api/secrets?project=discord-bot&environment=prod" \
-  -H "Authorization: Bearer $TOKEN"
+  -H "Authorization: Bearer <TOKEN>"
 
 curl "http://127.0.0.1:8787/api/secrets/reveal?name=OPENAI_API_KEY&project=discord-bot&environment=prod" \
-  -H "Authorization: Bearer $TOKEN"
+  -H "Authorization: Bearer <TOKEN>"
+
+curl "http://127.0.0.1:8787/api/doctor?project=discord-bot&environment=prod" \
+  -H "Authorization: Bearer <TOKEN>"
+
+curl "http://127.0.0.1:8787/api/audit?limit=25" \
+  -H "Authorization: Bearer <TOKEN>"
 
 curl -X POST http://127.0.0.1:8787/api/logout \
-  -H "Authorization: Bearer $TOKEN"
+  -H "Authorization: Bearer <TOKEN>"
 ```
 
 ## Tests

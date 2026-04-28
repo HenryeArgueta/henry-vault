@@ -10,6 +10,7 @@ from fastapi import Cookie, Depends, FastAPI, Header, HTTPException, Query, Requ
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
+from .doctor import doctor_report
 from .errors import VaultLocked, VaultNotInitialized
 from .store import DEFAULT_DB_PATH, VaultStore
 
@@ -59,7 +60,15 @@ HTML = """
     <input id="project" placeholder="Project filter" />
     <input id="environment" placeholder="Environment filter" />
     <button onclick="loadSecrets()">List secrets</button>
+    <button onclick="loadDoctor()">Doctor</button>
+    <button onclick="loadAudit()">Audit</button>
     <button onclick="logout()">Logout</button>
+  </div>
+  <div class="card" style="margin-top: 1rem;">
+    <h2>Doctor</h2>
+    <pre id="doctor"></pre>
+    <h2>Audit</h2>
+    <pre id="audit"></pre>
   </div>
   <table>
     <thead><tr><th>Project</th><th>Env</th><th>Name</th><th>Tags</th><th>Updated</th><th>Reveal</th></tr></thead>
@@ -106,6 +115,23 @@ HTML = """
       const data = await res.json();
       await navigator.clipboard.writeText(data.value).catch(() => {});
       alert(`${name} copied to clipboard if browser allowed it.`);
+    }
+    async function loadDoctor() {
+      if (!unlocked) { alert('Unlock first'); return; }
+      const params = new URLSearchParams();
+      const project = document.getElementById('project').value;
+      const environment = document.getElementById('environment').value;
+      if (project) params.set('project', project);
+      if (environment) params.set('environment', environment);
+      const res = await fetch('/api/doctor?' + params.toString(), {headers: authHeaders()});
+      if (!res.ok) { alert('Doctor failed'); return; }
+      document.getElementById('doctor').textContent = JSON.stringify(await res.json(), null, 2);
+    }
+    async function loadAudit() {
+      if (!unlocked) { alert('Unlock first'); return; }
+      const res = await fetch('/api/audit?limit=25', {headers: authHeaders()});
+      if (!res.ok) { alert('Audit failed'); return; }
+      document.getElementById('audit').textContent = JSON.stringify(await res.json(), null, 2);
     }
   </script>
 </body>
@@ -234,5 +260,22 @@ def create_app(
             raise HTTPException(status_code=404, detail="Secret not found")
         store.record_audit("web.secret.reveal", secret_name=name, project=project, environment=environment)
         return {"name": secret.name, "value": secret.value}
+
+    @app.get("/api/doctor")
+    def doctor(
+        project: Optional[str] = None,
+        environment: Optional[str] = None,
+        expiring_days: int = Query(default=30, ge=0),
+        store: VaultStore = Depends(store_for_session),
+    ) -> dict:
+        report = doctor_report(store, expiring_days=expiring_days, project=project, environment=environment)
+        store.record_audit("web.doctor", project=project, environment=environment, status="success" if report.ok else "issues", message=f"count={len(report.issues)}")
+        return {"ok": report.ok, "issues": [issue.__dict__ for issue in report.issues]}
+
+    @app.get("/api/audit")
+    def audit(limit: int = Query(default=50, ge=1, le=500), store: VaultStore = Depends(store_for_session)) -> list[dict]:
+        events = store.list_audit_events(limit=limit)
+        store.record_audit("web.audit.list", message=f"count={len(events)}")
+        return [event.__dict__ for event in events]
 
     return app

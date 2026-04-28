@@ -87,3 +87,57 @@ def test_web_login_rejects_wrong_password(tmp_path):
 
     denied = client.post("/api/login", json={"password": "wrong"})
     assert denied.status_code == 401
+
+
+def test_web_doctor_endpoint_reports_sanitized_issues(tmp_path):
+    db_path = tmp_path / "vault.db"
+    store = VaultStore(db_path)
+    store.init("pw")
+    store.unlock("pw")
+    store.add_secret(SecretInput(name="API_KEY", value="secret-value", project="demo", environment="prod"))
+    store.set_project_profile("demo", "prod", required_secrets=["API_KEY", "DATABASE_URL"])
+
+    client = TestClient(create_app(db_path))
+    login = client.post("/api/login", json={"password": "pw"})
+    token = login.json()["token"]
+    response = client.get("/api/doctor", params={"project": "demo", "environment": "prod"}, headers={"Authorization": f"Bearer {token}"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is False
+    assert any(issue["code"] == "missing_required_secret" and issue["secret_name"] == "DATABASE_URL" for issue in payload["issues"])
+    assert "secret-value" not in response.text
+
+
+def test_web_audit_endpoint_lists_sanitized_events(tmp_path):
+    db_path = tmp_path / "vault.db"
+    store = VaultStore(db_path)
+    store.init("pw")
+    store.unlock("pw")
+    store.add_secret(SecretInput(name="TOKEN", value="secret-value", project="demo", environment="prod"))
+    store.record_audit("secret.add", secret_name="TOKEN", project="demo", environment="prod")
+
+    client = TestClient(create_app(db_path))
+    login = client.post("/api/login", json={"password": "pw"})
+    token = login.json()["token"]
+    response = client.get("/api/audit", params={"limit": 10}, headers={"Authorization": f"Bearer {token}"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert any(event["action"] == "secret.add" and event["secret_name"] == "TOKEN" for event in payload)
+    assert "secret-value" not in response.text
+
+
+def test_web_index_includes_doctor_and_audit_controls(tmp_path):
+    db_path = tmp_path / "vault.db"
+    store = VaultStore(db_path)
+    store.init("pw")
+
+    client = TestClient(create_app(db_path))
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert "Doctor" in response.text
+    assert "Audit" in response.text
+    assert "/api/doctor" in response.text
+    assert "/api/audit" in response.text
