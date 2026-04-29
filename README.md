@@ -17,6 +17,26 @@ pipx install 'git+https://github.com/HenryeArgueta/henry-vault.git'
 It stores secrets in an encrypted SQLite database at `~/.henry-vault/vault.db` by default.
 Secret values are encrypted at rest with Fernet. The vault encryption key is derived from your master password with Argon2id and a per-vault random salt.
 
+## Quick start
+
+If you just want to try Henry Vault right away:
+
+1. Install it.
+2. Initialize a vault.
+3. Add a secret.
+4. Open the web UI or keep using the CLI.
+
+```bash
+hv init
+hv add OPENAI_API_KEY 'your-secret-value' --project discord-bot --env prod --tag ai
+hv list --project discord-bot --env prod
+hv web --host 127.0.0.1 --port 8787
+```
+
+Then open `http://127.0.0.1:8787` and log in with your master password.
+
+For remote access, keep the server bound to `127.0.0.1` and use an SSH tunnel from your other computer.
+
 ## Features
 
 - Initialize an encrypted vault.
