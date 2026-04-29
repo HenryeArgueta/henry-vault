@@ -427,6 +427,7 @@ Good defaults already included:
 - web UI requires per-session CSRF tokens for cookie-authenticated unsafe requests
 - web login has in-memory failed-attempt lockout
 - web UI avoids sending the master password on every reveal/list call after login
+- if you forget the master password, there is no recovery path for that vault; restore from a backup or CSV export if you have one, then create a new vault password
 - audit log avoids storing secret values
 - doctor reports operational hygiene issues
 
