@@ -31,7 +31,7 @@ Secret values are encrypted at rest with Fernet. The vault encryption key is der
 ## Install for local development
 
 ```bash
-cd /home/henry/.openclaw/workspace/henry-vault
+cd /path/to/henry-vault
 python3 -m venv .venv
 .venv/bin/pip install -e '.[test]'
 ```
@@ -239,7 +239,7 @@ hv backup-schedule-command \
 Example crontab entry for 2:15 AM daily:
 
 ```cron
-15 2 * * * HENRY_VAULT_PASSWORD="$(cat /home/henry/.henry-vault/vault-password.txt)" /home/henry/.local/bin/hv --db /home/henry/.henry-vault/vault.db backup-export /home/henry/backups/henry-vault-$(date +\%F).hv.json --backup-password "$(cat /home/henry/.henry-vault/backup-password.txt)"
+15 2 * * * HENRY_VAULT_PASSWORD=*** "$HOME/.henry-vault/vault-password.txt" "$HOME/.local/bin/hv" --db "$HOME/.henry-vault/vault.db" backup-export "$HOME/backups/henry-vault-$(date +\%F).hv.json" --backup-password "$(cat "$HOME/.henry-vault/backup-password.txt")"
 ```
 
 ## Scan for leaked secrets
@@ -247,13 +247,13 @@ Example crontab entry for 2:15 AM daily:
 Basic pattern scan:
 
 ```bash
-hv scan /home/henry/.openclaw/workspace/Discord
+hv scan /path/to/your/target-repo
 ```
 
 Match files against current vault values too:
 
 ```bash
-hv scan /home/henry/.openclaw/workspace/Discord --match-vault
+hv scan /path/to/your/target-repo --match-vault
 ```
 
 Exit codes:
@@ -315,11 +315,11 @@ Cookie-authenticated browser requests use `X-CSRF-Token`; bearer-token API reque
 From a local checkout:
 
 ```bash
-pipx install /home/henry/.openclaw/workspace/henry-vault
+pipx install /path/to/henry-vault
 pipx upgrade henry-vault
 ```
 
-From GitHub, replace `OWNER/REPO` with the private repository path:
+From GitHub, replace `OWNER/REPO` with your repository path:
 
 ```bash
 pipx install 'git+https://github.com/OWNER/REPO.git'
