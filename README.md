@@ -82,8 +82,22 @@ If `~/.local/bin` is on your `PATH`, `hv` will work from anywhere.
 
 For interactive use, omit `HENRY_VAULT_PASSWORD` and the CLI will prompt.
 
+If you want a simple copy/paste demo, use a throwaway vault database and walk through the basics:
+
 ```bash
-export HENRY_VAULT_PASSWORD='choose...word'
+export HENRY_VAULT_PASSWORD='***'
+
+hv --db /tmp/henry-vault-demo.db init
+hv --db /tmp/henry-vault-demo.db add OPENAI_API_KEY 'your-secret-value' --project demo --env dev --tag ai
+hv --db /tmp/henry-vault-demo.db list --project demo --env dev
+hv --db /tmp/henry-vault-demo.db get OPENAI_API_KEY --project demo --env dev
+hv --db /tmp/henry-vault-demo.db export-env --project demo --env dev
+```
+
+When you're ready for a real project vault, the common workflow looks like this:
+
+```bash
+export HENRY_VAULT_PASSWORD='***'
 
 hv init
 hv add OPENAI_API_KEY 'sk-your-key' --project discord-bot --env prod --tag ai
