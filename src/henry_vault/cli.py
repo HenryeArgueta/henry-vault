@@ -13,7 +13,7 @@ from .doctor import doctor_report
 from .errors import VaultAlreadyExists, VaultError, VaultLocked, VaultNotInitialized
 from .install import backup_schedule_command, install_cli
 from .scanner import scan_path
-from .store import DEFAULT_DB_PATH, AttachmentInput, PasswordInput, SecretInput, VaultStore
+from .store import DEFAULT_DB_PATH, AttachmentInput, CredentialTransferSummary, PasswordInput, SecretInput, VaultStore
 
 app = typer.Typer(help="Henry Vault: encrypted local secrets manager")
 
@@ -271,6 +271,24 @@ def import_env(
     store = _unlock(ctx.obj["db"])
     imported = store.import_env_file(path, project=project, environment=env, tags=list(tag))
     typer.echo(f"Imported {len(imported)} secrets into {project}/{env}")
+
+
+@app.command("export-credentials")
+def export_credentials(ctx: typer.Context, path: Path) -> None:
+    """Export secrets and passwords to a single CSV file."""
+    store = _unlock(ctx.obj["db"])
+    summary = store.export_credentials(path)
+    store.record_audit("credentials.export", message=f"path={path.name} secrets={summary.secrets} passwords={summary.passwords}")
+    typer.echo(f"Exported {summary.secrets} secrets and {summary.passwords} passwords to {path}")
+
+
+@app.command("import-credentials")
+def import_credentials(ctx: typer.Context, path: Path) -> None:
+    """Import secrets and passwords from a single CSV file."""
+    store = _unlock(ctx.obj["db"])
+    summary = store.import_credentials(path)
+    store.record_audit("credentials.import", message=f"path={path.name} secrets={summary.secrets} passwords={summary.passwords}")
+    typer.echo(f"Imported {summary.secrets} secrets and {summary.passwords} passwords from {path}")
 
 
 @app.command("backup-export")

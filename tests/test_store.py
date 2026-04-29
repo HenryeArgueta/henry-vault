@@ -92,6 +92,50 @@ def test_list_secrets_filters_by_name_query_and_tags_without_values(tmp_path):
     assert not hasattr(results[0], "value")
 
 
+def test_export_and_import_credentials_csv_round_trip(tmp_path):
+    source = VaultStore(tmp_path / "source.db")
+    source.init("pw")
+    source.unlock("pw")
+    source.add_secret(SecretInput(name="OPENAI_API_KEY", value="openai-secret", project="demo", environment="prod", tags=["ai", "prod"], notes="primary api key"))
+    source.add_password(
+        __import__("henry_vault.store", fromlist=["PasswordInput"]).PasswordInput(
+            name="GitHub",
+            url="https://github.com",
+            username="henry",
+            password="browser-password",
+            note="personal account",
+        )
+    )
+
+    export_path = tmp_path / "credentials.csv"
+    summary = source.export_credentials(export_path)
+
+    assert export_path.exists()
+    assert summary.secrets == 1
+    assert summary.passwords == 1
+    raw = export_path.read_text()
+    assert "kind,name,project,environment,url,username,value,note,tags,expires_at,rotation_url,created_at,updated_at" in raw
+    assert "OPENAI_API_KEY" in raw
+    assert "GitHub" in raw
+    assert "openai-secret" in raw
+    assert "browser-password" in raw
+
+    restored = VaultStore(tmp_path / "restored.db")
+    restored.init("new-pw")
+    restored.unlock("new-pw")
+    imported = restored.import_credentials(export_path)
+
+    assert imported.secrets == 1
+    assert imported.passwords == 1
+    secret = restored.get_secret("OPENAI_API_KEY", project="demo", environment="prod")
+    password = restored.get_password("GitHub", url="https://github.com", username="henry")
+    assert secret.value == "openai-secret"
+    assert secret.tags == ["ai", "prod"]
+    assert secret.notes == "primary api key"
+    assert password.password == "browser-password"
+    assert password.note == "personal account"
+
+
 def test_attachment_round_trip_encrypts_file_content_at_rest(tmp_path):
     db_path = tmp_path / "vault.db"
     store = VaultStore(db_path)

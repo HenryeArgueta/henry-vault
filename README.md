@@ -5,7 +5,7 @@ Henry Vault is a local-first encrypted secrets manager with both a CLI and a web
 Quick install from the latest release:
 
 ```bash
-pipx install 'git+https://github.com/HenryeArgueta/henry-vault.git@v0.2.0'
+pipx install 'git+https://github.com/HenryeArgueta/henry-vault.git@v0.2.1'
 ```
 
 Or install from the latest branch tip:
@@ -28,6 +28,7 @@ Secret values are encrypted at rest with Fernet. The vault encryption key is der
 - Run commands with secrets injected into the process environment, with required-profile preflight checks.
 - Store encrypted file attachments such as service account JSON, certs, private keys, and recovery codes.
 - Export/import encrypted backup bundles with a separate backup password.
+- Export/import all secrets and passwords in a single CSV file.
 - Prune old Henry Vault backup bundles safely with dry-run by default.
 - Scan repos for likely leaked secrets and known vault secret values.
 - Start a local FastAPI web UI/API with short-lived HttpOnly browser sessions and bearer-token API compatibility.
@@ -124,6 +125,22 @@ export KEY=value
 QUOTED="hello world"
 SINGLE='hello world'
 ```
+
+## Export/import credentials as CSV
+
+Export all secrets and passwords into one CSV file:
+
+```bash
+hv export-credentials ~/henry-vault-credentials.csv
+```
+
+Import the same CSV into a fresh vault:
+
+```bash
+hv import-credentials ~/henry-vault-credentials.csv
+```
+
+The CSV includes plaintext values for portability, so keep it encrypted-at-rest or delete it after use.
 
 ## Audit log
 
@@ -334,7 +351,7 @@ pipx upgrade henry-vault
 From GitHub, use the published tag for a stable install:
 
 ```bash
-pipx install 'git+https://github.com/HenryeArgueta/henry-vault.git@v0.2.0'
+pipx install 'git+https://github.com/HenryeArgueta/henry-vault.git@v0.2.1'
 ```
 
 You can also install from the latest branch tip:

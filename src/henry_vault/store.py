@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import csv
 import json
 import os
 import sqlite3
@@ -100,6 +101,12 @@ class PasswordMetadata:
 @dataclass(frozen=True)
 class Password(PasswordMetadata):
     password: str = ""
+
+
+@dataclass(frozen=True)
+class CredentialTransferSummary:
+    secrets: int = 0
+    passwords: int = 0
 
 
 @dataclass(frozen=True)
@@ -415,6 +422,121 @@ class VaultStore:
         for name, value in parsed.items():
             self.add_secret(SecretInput(name=name, value=value, project=project, environment=environment, tags=tags or []))
         return sorted(parsed.keys())
+
+    def export_credentials(self, path: str | Path) -> CredentialTransferSummary:
+        self._require_unlocked()
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fieldnames = [
+            "kind",
+            "name",
+            "project",
+            "environment",
+            "url",
+            "username",
+            "value",
+            "note",
+            "tags",
+            "expires_at",
+            "rotation_url",
+            "created_at",
+            "updated_at",
+        ]
+        secret_count = 0
+        password_count = 0
+        rows: list[dict[str, str]] = []
+        for item in self.list_secrets():
+            secret = self.get_secret(item.name, project=item.project, environment=item.environment)
+            if secret is None:
+                continue
+            rows.append(
+                {
+                    "kind": "secret",
+                    "name": secret.name,
+                    "project": secret.project,
+                    "environment": secret.environment,
+                    "url": "",
+                    "username": "",
+                    "value": secret.value,
+                    "note": secret.notes,
+                    "tags": json.dumps(secret.tags, ensure_ascii=False),
+                    "expires_at": secret.expires_at or "",
+                    "rotation_url": secret.rotation_url or "",
+                    "created_at": secret.created_at,
+                    "updated_at": secret.updated_at,
+                }
+            )
+            secret_count += 1
+        for item in self.list_passwords():
+            password = self.get_password(item.name, url=item.url, username=item.username)
+            if password is None:
+                continue
+            rows.append(
+                {
+                    "kind": "password",
+                    "name": password.name,
+                    "project": "",
+                    "environment": "",
+                    "url": password.url,
+                    "username": password.username,
+                    "value": password.password,
+                    "note": password.note,
+                    "tags": "",
+                    "expires_at": "",
+                    "rotation_url": "",
+                    "created_at": password.created_at,
+                    "updated_at": password.updated_at,
+                }
+            )
+            password_count += 1
+        with path.open("w", encoding="utf-8", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(rows)
+        return CredentialTransferSummary(secrets=secret_count, passwords=password_count)
+
+    def import_credentials(self, path: str | Path) -> CredentialTransferSummary:
+        self._require_unlocked()
+        path = Path(path)
+        if path.suffix.lower() != ".csv":
+            raise ValueError("Only .csv credential files are supported")
+        secret_count = 0
+        password_count = 0
+        with path.open("r", encoding="utf-8", newline="") as f:
+            reader = csv.DictReader(f)
+            if reader.fieldnames is None:
+                raise ValueError("Missing CSV header")
+            for row in reader:
+                kind = (row.get("kind") or row.get("type") or "").strip().lower()
+                if not kind:
+                    kind = "password" if (row.get("url") or row.get("username")) else "secret"
+                if kind == "secret":
+                    tags_text = (row.get("tags") or "[]").strip()
+                    tags = json.loads(tags_text) if tags_text else []
+                    if not isinstance(tags, list):
+                        raise ValueError("tags must be a JSON array")
+                    project = (row.get("project") or "default").strip() or "default"
+                    environment = (row.get("environment") or "default").strip() or "default"
+                    name = (row.get("name") or "").strip()
+                    value = row.get("value") or ""
+                    note = row.get("note") or ""
+                    self.add_secret(SecretInput(name=name, value=value, project=project, environment=environment, tags=[str(tag) for tag in tags], notes=note))
+                    expires_at = (row.get("expires_at") or "").strip() or None
+                    rotation_url = (row.get("rotation_url") or "").strip() or None
+                    if expires_at or rotation_url:
+                        self.set_secret_metadata(name, project=project, environment=environment, expires_at=expires_at, rotation_url=rotation_url)
+                    secret_count += 1
+                elif kind == "password":
+                    name = (row.get("name") or "").strip()
+                    url = (row.get("url") or "").strip()
+                    username = (row.get("username") or "").strip()
+                    value = row.get("value") or ""
+                    note = row.get("note") or ""
+                    self.add_password(PasswordInput(name=name, url=url, username=username, password=value, note=note))
+                    password_count += 1
+                else:
+                    raise ValueError(f"Unsupported credential kind: {kind}")
+        return CredentialTransferSummary(secrets=secret_count, passwords=password_count)
 
     def set_secret_metadata(
         self,

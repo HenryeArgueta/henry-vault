@@ -88,6 +88,29 @@ def test_cli_backup_export_and_import(tmp_path, monkeypatch):
     assert result.output.strip() == "secret"
 
 
+def test_cli_export_and_import_credentials_csv(tmp_path, monkeypatch):
+    source_db = tmp_path / "source.db"
+    restored_db = tmp_path / "restored.db"
+    export_path = tmp_path / "credentials.csv"
+    monkeypatch.setenv("HENRY_VAULT_PASSWORD", "pw")
+
+    assert runner.invoke(app, ["--db", str(source_db), "init"]).exit_code == 0
+    assert runner.invoke(app, ["--db", str(source_db), "add", "API_KEY", "secret", "--project", "demo", "--env", "prod"]).exit_code == 0
+    assert runner.invoke(app, ["--db", str(source_db), "password-add", "GitHub", "https://github.com", "henry", "browser-password", "--note", "personal account"]).exit_code == 0
+
+    result = runner.invoke(app, ["--db", str(source_db), "export-credentials", str(export_path)])
+    assert result.exit_code == 0
+    assert export_path.exists()
+    assert "API_KEY" in export_path.read_text()
+    assert "browser-password" in export_path.read_text()
+
+    assert runner.invoke(app, ["--db", str(restored_db), "init"]).exit_code == 0
+    result = runner.invoke(app, ["--db", str(restored_db), "import-credentials", str(export_path)])
+    assert result.exit_code == 0
+    assert runner.invoke(app, ["--db", str(restored_db), "get", "API_KEY", "--project", "demo", "--env", "prod"]).output.strip() == "secret"
+    assert runner.invoke(app, ["--db", str(restored_db), "password-get", "GitHub", "https://github.com", "henry"]).output.strip() == "browser-password"
+
+
 def test_cli_scan_reports_findings_without_full_secret(tmp_path, monkeypatch):
     db_path = tmp_path / "vault.db"
     repo = tmp_path / "repo"
