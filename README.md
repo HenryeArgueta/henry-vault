@@ -90,6 +90,18 @@ Install a convenient `hv` symlink:
 
 If `~/.local/bin` is on your `PATH`, `hv` will work from anywhere.
 
+## What should I do first?
+
+A simple first session looks like this:
+
+1. Initialize the vault: `hv init`
+2. Add one secret: `hv add API_KEY 'your-secret-value' --project demo --env dev`
+3. Check that it is there: `hv list --project demo --env dev`
+4. Reveal it once to confirm everything works: `hv get API_KEY --project demo --env dev`
+5. Try the web UI: `hv web --host 127.0.0.1 --port 8787`
+
+After that, you can move on to profiles, attachments, passwords, backups, and CSV import/export.
+
 ## CLI quickstart
 
 For interactive use, omit `HENRY_VAULT_PASSWORD` and the CLI will prompt.
