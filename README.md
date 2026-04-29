@@ -239,7 +239,7 @@ hv backup-schedule-command \
 Example crontab entry for 2:15 AM daily:
 
 ```cron
-15 2 * * * HENRY_VAULT_PASSWORD=*** "$HOME/.henry-vault/vault-password.txt" "$HOME/.local/bin/hv" --db "$HOME/.henry-vault/vault.db" backup-export "$HOME/backups/henry-vault-$(date +\%F).hv.json" --backup-password "$(cat "$HOME/.henry-vault/backup-password.txt")"
+15 2 * * * HENRY_VAULT_PASSWORD="$(cat "$HOME/.henry-vault/vault-password.txt")" "$HOME/.local/bin/hv" --db "$HOME/.henry-vault/vault.db" backup-export "$HOME/backups/henry-vault-$(date +\%F).hv.json" --backup-password "$(cat "$HOME/.henry-vault/backup-password.txt")"
 ```
 
 ## Scan for leaked secrets
