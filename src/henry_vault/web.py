@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import secrets
+import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -366,6 +367,11 @@ HTML = """
       <div class="section-body stack">
         <div class="row">
           <button id="password-list" class="fixed secondary" type="button" onclick="loadPasswords()">Refresh passwords</button>
+          <button id="credentials-export" class="fixed secondary" type="button" onclick="exportCredentials()">Export credentials CSV</button>
+          <form id="credentials-import-form" class="row" onsubmit="return importCredentials(event)">
+            <input id="credentials-import-file" class="fixed" type="file" accept=".csv,text/csv" required />
+            <button class="fixed secondary" type="submit">Import credentials CSV</button>
+          </form>
         </div>
         <form id="add-password-form" class="stack" onsubmit="return addPassword(event)">
           <h3>Add password</h3>
@@ -777,6 +783,39 @@ HTML = """
       return false;
     }
 
+    async function exportCredentials() {
+      if (!unlocked) { setStatus('Unlock first', 'error'); return; }
+      const res = await fetch('/api/credentials/export');
+      if (!res.ok) { setStatus('Export credentials failed', 'error'); return; }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'henry-vault-credentials.csv';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      setStatus('Exported credentials CSV.', 'success');
+    }
+
+    async function importCredentials(event) {
+      if (event) event.preventDefault();
+      if (!unlocked) { setStatus('Unlock first', 'error'); return false; }
+      const fileInput = document.getElementById('credentials-import-file');
+      const file = fileInput.files && fileInput.files[0];
+      if (!file) { setStatus('Choose a CSV file', 'error'); return false; }
+      const formData = new FormData();
+      formData.append('file', file);
+      const res = await fetch('/api/credentials/import', {method: 'POST', headers: csrfHeaders(), body: formData});
+      if (!res.ok) { setStatus('Import credentials failed', 'error'); return false; }
+      const data = await res.json();
+      fileInput.value = '';
+      setStatus(`Imported ${data.secrets} secrets and ${data.passwords} passwords.`, 'success');
+      await Promise.all([loadSecrets(), loadPasswords(), loadAttachments()]);
+      return false;
+    }
+
     async function copyPassword(name, url, username) {
       const params = new URLSearchParams({name, url, username});
       const res = await fetch('/api/passwords/reveal?' + params.toString());
@@ -878,7 +917,7 @@ def create_app(
     max_failed_logins: int = 5,
     lockout_seconds: int = 60,
 ) -> FastAPI:
-    app = FastAPI(title="Henry Vault", version="0.2.0")
+    app = FastAPI(title="Henry Vault", version="0.2.1")
     sessions: dict[str, Session] = {}
     failed_logins: dict[str, FailedLoginState] = {}
 
@@ -1044,6 +1083,41 @@ def create_app(
         items = store.list_passwords(query=query)
         store.record_audit("web.password.list", message=f"count={len(items)}")
         return [item.__dict__ for item in items]
+
+    @app.get("/api/credentials/export")
+    def export_credentials(store: VaultStore = Depends(store_for_session)) -> Response:
+        with tempfile.NamedTemporaryFile("wb", suffix=".csv", delete=False) as tmp:
+            temp_path = Path(tmp.name)
+        try:
+            summary = store.export_credentials(temp_path)
+            content = temp_path.read_bytes()
+        finally:
+            temp_path.unlink(missing_ok=True)
+        store.record_audit("web.credentials.export", message=f"secrets={summary.secrets} passwords={summary.passwords}")
+        headers = {"Content-Disposition": 'attachment; filename="henry-vault-credentials.csv"'}
+        return Response(content=content, media_type="text/csv; charset=utf-8", headers=headers)
+
+    @app.post("/api/credentials/import")
+    def import_credentials(
+        file: UploadFile = File(...),
+        authorization: str = Header(default=""),
+        hv_session: str | None = Cookie(default=None, alias=COOKIE_NAME),
+        x_csrf_token: str = Header(default=""),
+        store: VaultStore = Depends(store_for_session),
+    ) -> dict[str, int | bool]:
+        csrf_guard(hv_session, authorization, x_csrf_token)
+        original_name = Path(file.filename or "credentials.csv")
+        if original_name.suffix.lower() != ".csv":
+            raise HTTPException(status_code=400, detail="Only .csv credential files are supported")
+        with tempfile.NamedTemporaryFile("wb", suffix=".csv", delete=False) as tmp:
+            temp_path = Path(tmp.name)
+            tmp.write(file.file.read())
+        try:
+            summary = store.import_credentials(temp_path)
+        finally:
+            temp_path.unlink(missing_ok=True)
+        store.record_audit("web.credentials.import", message=f"secrets={summary.secrets} passwords={summary.passwords}")
+        return {"ok": True, "secrets": summary.secrets, "passwords": summary.passwords}
 
     @app.post("/api/passwords")
     def add_password(

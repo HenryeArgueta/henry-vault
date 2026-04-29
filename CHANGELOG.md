@@ -6,6 +6,7 @@ All notable changes to Henry Vault will be documented in this file.
 
 ### Added
 - Export/import all secrets and passwords in a single CSV file for easier migration and sharing.
+- Added matching browser controls in the Passwords section for CSV export and upload.
 
 ## [0.2.0] - Web UI polish release
 

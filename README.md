@@ -29,6 +29,7 @@ Secret values are encrypted at rest with Fernet. The vault encryption key is der
 - Store encrypted file attachments such as service account JSON, certs, private keys, and recovery codes.
 - Export/import encrypted backup bundles with a separate backup password.
 - Export/import all secrets and passwords in a single CSV file.
+- Use the same CSV export/import workflow from the web UI.
 - Prune old Henry Vault backup bundles safely with dry-run by default.
 - Scan repos for likely leaked secrets and known vault secret values.
 - Start a local FastAPI web UI/API with short-lived HttpOnly browser sessions and bearer-token API compatibility.
@@ -141,6 +142,8 @@ hv import-credentials ~/henry-vault-credentials.csv
 ```
 
 The CSV includes plaintext values for portability, so keep it encrypted-at-rest or delete it after use.
+
+The same export/import flow is available in the web UI under the Passwords section.
 
 ## Audit log
 

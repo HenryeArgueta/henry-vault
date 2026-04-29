@@ -1,6 +1,6 @@
 from fastapi.testclient import TestClient
 
-from henry_vault.store import SecretInput, VaultStore
+from henry_vault.store import PasswordInput, SecretInput, VaultStore
 from henry_vault.web import create_app
 
 
@@ -453,3 +453,62 @@ def test_web_can_add_and_retrieve_password_via_api(tmp_path):
 
     listed_again = client.get("/api/passwords", headers=headers)
     assert listed_again.json() == []
+
+
+def test_web_can_export_and_import_credentials_via_api(tmp_path):
+    db_path = tmp_path / "vault.db"
+    export_path = tmp_path / "credentials.csv"
+    store = VaultStore(db_path)
+    store.init("pw")
+    store.unlock("pw")
+    store.add_secret(SecretInput(name="API_KEY", value="secret-value", project="demo", environment="prod", tags=["alpha"], notes="secret note"))
+    store.add_password(PasswordInput(name="GitHub", url="https://github.com", username="henry", password="secret-pass", note="personal account"))
+
+    client = TestClient(create_app(db_path))
+    login = client.post("/api/login", json={"password": "pw"})
+    token = login.json()["token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    export_response = client.get("/api/credentials/export", headers=headers)
+    assert export_response.status_code == 200
+    assert export_response.headers["content-type"].startswith("text/csv")
+    assert "attachment" in export_response.headers["content-disposition"]
+    export_path.write_bytes(export_response.content)
+    assert b"API_KEY" in export_response.content
+    assert b"GitHub" in export_response.content
+
+    client.delete("/api/secrets", params={"name": "API_KEY", "project": "demo", "environment": "prod"}, headers=headers)
+    client.delete("/api/passwords", params={"name": "GitHub", "url": "https://github.com", "username": "henry"}, headers=headers)
+
+    import_response = client.post(
+        "/api/credentials/import",
+        headers=headers,
+        files={"file": ("credentials.csv", export_path.read_bytes(), "text/csv")},
+    )
+    assert import_response.status_code == 200
+    assert import_response.json()["ok"] is True
+    assert import_response.json()["secrets"] == 1
+    assert import_response.json()["passwords"] == 1
+
+    secrets = client.get("/api/secrets", params={"project": "demo", "environment": "prod"}, headers=headers).json()
+    passwords = client.get("/api/passwords", headers=headers).json()
+    assert [item["name"] for item in secrets] == ["API_KEY"]
+    assert [item["name"] for item in passwords] == ["GitHub"]
+
+
+def test_web_index_includes_credential_transfer_controls(tmp_path):
+    db_path = tmp_path / "vault.db"
+    store = VaultStore(db_path)
+    store.init("pw")
+
+    client = TestClient(create_app(db_path))
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert "Export credentials CSV" in response.text
+    assert "Import credentials CSV" in response.text
+    assert 'id="credentials-export"' in response.text
+    assert 'id="credentials-import-form"' in response.text
+    assert 'id="credentials-import-file"' in response.text
+    assert '/api/credentials/export' in response.text
+    assert '/api/credentials/import' in response.text
