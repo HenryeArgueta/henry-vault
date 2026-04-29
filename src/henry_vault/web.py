@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 from .doctor import doctor_report
 from .errors import VaultLocked, VaultNotInitialized
-from .store import AttachmentInput, DEFAULT_DB_PATH, SecretInput, VaultStore
+from .store import AttachmentInput, DEFAULT_DB_PATH, PasswordInput, SecretInput, VaultStore
 
 
 class AddSecretRequest(BaseModel):
@@ -22,6 +22,14 @@ class AddSecretRequest(BaseModel):
     environment: str = "default"
     tags: list[str] = []
     notes: str = ""
+
+
+class AddPasswordRequest(BaseModel):
+    name: str
+    url: str
+    username: str
+    password: str
+    note: str = ""
 
 
 class LoginRequest(BaseModel):
@@ -54,40 +62,123 @@ HTML = """
       color-scheme: dark;
     }
     body {
-      --page-bg: #0f172a;
-      --panel-bg: #111827;
-      --text-color: #e2e8f0;
-      --muted-color: #94a3b8;
-      --border-color: #334155;
-      --input-bg: #020617;
-      --button-bg: #2563eb;
-      --button-secondary-bg: #334155;
-      --danger-bg: #b91c1c;
-      --row-alt-bg: rgba(148, 163, 184, 0.08);
-      background: var(--page-bg);
+      --page-bg: #09090b;
+      --panel-bg: rgba(24, 24, 27, 0.82);
+      --text-color: #f4f1ea;
+      --muted-color: #b4a79a;
+      --border-color: rgba(213, 180, 118, 0.24);
+      --input-bg: rgba(10, 10, 12, 0.9);
+      --button-bg: linear-gradient(135deg, #d4af37 0%, #9c7a2f 52%, #6e5320 100%);
+      --button-secondary-bg: rgba(48, 38, 28, 0.9);
+      --danger-bg: linear-gradient(135deg, #c2410c 0%, #7c2d12 100%);
+      --row-alt-bg: rgba(212, 175, 55, 0.06);
+      --accent-glow: rgba(212, 175, 55, 0.18);
+      background:
+        radial-gradient(circle at top, rgba(212, 175, 55, 0.12), transparent 34%),
+        radial-gradient(circle at bottom right, rgba(120, 53, 15, 0.18), transparent 24%),
+        var(--page-bg);
       color: var(--text-color);
-      font-family: system-ui, sans-serif;
+      font-family: "Inter", "Segoe UI", system-ui, sans-serif;
       margin: 2rem;
       max-width: 1200px;
     }
-    body[data-theme="light"] {
+    body[data-theme="pearl-light"] {
       color-scheme: light;
-      --page-bg: #f8fafc;
-      --panel-bg: #ffffff;
-      --text-color: #0f172a;
-      --muted-color: #475569;
-      --border-color: #cbd5e1;
+      --page-bg: #f8f5ef;
+      --panel-bg: rgba(255, 255, 255, 0.92);
+      --text-color: #1f2937;
+      --muted-color: #5b6472;
+      --border-color: rgba(122, 92, 26, 0.18);
       --input-bg: #ffffff;
-      --button-secondary-bg: #475569;
-      --danger-bg: #dc2626;
-      --row-alt-bg: rgba(15, 23, 42, 0.04);
+      --button-bg: linear-gradient(135deg, #d1a84a 0%, #b8892f 100%);
+      --button-secondary-bg: #5b6472;
+      --danger-bg: linear-gradient(135deg, #dc2626 0%, #b91c1c 100%);
+      --row-alt-bg: rgba(31, 41, 55, 0.04);
+      --accent-glow: rgba(184, 137, 47, 0.12);
+    }
+    body[data-theme="royal-indigo"] {
+      color-scheme: dark;
+      --page-bg: #0a1026;
+      --panel-bg: rgba(18, 24, 54, 0.88);
+      --text-color: #f4f7ff;
+      --muted-color: #bbc7ff;
+      --border-color: rgba(122, 153, 255, 0.26);
+      --input-bg: rgba(9, 14, 33, 0.96);
+      --button-bg: linear-gradient(135deg, #7c8cff 0%, #4c63d2 100%);
+      --button-secondary-bg: rgba(40, 50, 94, 0.92);
+      --danger-bg: linear-gradient(135deg, #ef4444 0%, #8b1f3d 100%);
+      --row-alt-bg: rgba(124, 140, 255, 0.08);
+      --accent-glow: rgba(124, 140, 255, 0.18);
+    }
+    body[data-theme="emerald-velvet"] {
+      color-scheme: dark;
+      --page-bg: #07150f;
+      --panel-bg: rgba(10, 35, 25, 0.9);
+      --text-color: #effdf7;
+      --muted-color: #a9d8bf;
+      --border-color: rgba(110, 203, 163, 0.24);
+      --input-bg: rgba(5, 20, 14, 0.96);
+      --button-bg: linear-gradient(135deg, #49c98e 0%, #13795a 100%);
+      --button-secondary-bg: rgba(24, 72, 55, 0.9);
+      --danger-bg: linear-gradient(135deg, #f97316 0%, #8a3410 100%);
+      --row-alt-bg: rgba(73, 201, 142, 0.08);
+      --accent-glow: rgba(73, 201, 142, 0.18);
+    }
+    body[data-theme="rose-quartz"] {
+      color-scheme: light;
+      --page-bg: #fff5f8;
+      --panel-bg: rgba(255, 255, 255, 0.94);
+      --text-color: #2f2230;
+      --muted-color: #77596f;
+      --border-color: rgba(180, 104, 147, 0.18);
+      --input-bg: #ffffff;
+      --button-bg: linear-gradient(135deg, #e87ca1 0%, #b94f7c 100%);
+      --button-secondary-bg: #7b6174;
+      --danger-bg: linear-gradient(135deg, #db2777 0%, #a21caf 100%);
+      --row-alt-bg: rgba(232, 124, 161, 0.08);
+      --accent-glow: rgba(232, 124, 161, 0.14);
+    }
+    body[data-theme="sunset-amber"] {
+      color-scheme: dark;
+      --page-bg: #181006;
+      --panel-bg: rgba(47, 25, 7, 0.9);
+      --text-color: #fff4df;
+      --muted-color: #e7c78a;
+      --border-color: rgba(236, 179, 84, 0.22);
+      --input-bg: rgba(22, 13, 3, 0.96);
+      --button-bg: linear-gradient(135deg, #f9a825 0%, #c96a12 100%);
+      --button-secondary-bg: rgba(84, 52, 16, 0.92);
+      --danger-bg: linear-gradient(135deg, #f97316 0%, #9a3412 100%);
+      --row-alt-bg: rgba(249, 168, 37, 0.08);
+      --accent-glow: rgba(249, 168, 37, 0.18);
+    }
+    h1 {
+      font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
+      letter-spacing: .04em;
+      margin-bottom: .25rem;
+    }
+    .theme-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: .35rem;
+      margin-left: .6rem;
+      padding: .25rem .55rem;
+      border-radius: 999px;
+      border: 1px solid var(--border-color);
+      background: linear-gradient(135deg, rgba(212, 175, 55, 0.14), rgba(255, 255, 255, 0.04));
+      box-shadow: 0 0 0 1px var(--accent-glow), 0 10px 22px rgba(0, 0, 0, 0.14) inset;
+      color: var(--text-color);
+      font-size: .8rem;
+      text-transform: uppercase;
+      letter-spacing: .12em;
     }
     input, button, textarea, select { padding: .6rem; border-radius: .5rem; border: 1px solid var(--border-color); margin: .25rem; }
     input, textarea { background: var(--input-bg); color: var(--text-color); }
-    button { background: var(--button-bg); color: white; cursor: pointer; }
-    button:hover { filter: brightness(1.08); }
+    input::placeholder, textarea::placeholder { color: color-mix(in srgb, var(--muted-color) 82%, transparent); }
+    button { background: var(--button-bg); color: #fff8e7; cursor: pointer; box-shadow: 0 10px 20px rgba(0, 0, 0, 0.12); }
+    button:hover { filter: brightness(1.05); transform: translateY(-1px); }
     button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible {
-      outline: 2px solid #38bdf8;
+      outline: 2px solid #e6c15a;
       outline-offset: 2px;
     }
     button.secondary { background: var(--button-secondary-bg); }
@@ -99,17 +190,23 @@ HTML = """
     .status { margin-top: 1rem; min-height: 1.25rem; }
     .status.success { color: #86efac; }
     .status.error { color: #fca5a5; }
-    .card { background: var(--panel-bg); border: 1px solid var(--border-color); border-radius: 1rem; padding: 1rem; margin-top: 1rem; }
+    .card {
+      background: linear-gradient(180deg, rgba(255,255,255,.02), rgba(255,255,255,0)) , var(--panel-bg);
+      border: 1px solid var(--border-color);
+      border-radius: 1rem;
+      padding: 1rem;
+      margin-top: 1rem;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.18);
+    }
     body[data-density="compact"] .card { padding: .75rem; }
     body[data-density="compact"] .topbar { padding-bottom: .5rem; }
     body[data-density="compact"] .shortcuts { margin-top: .35rem; }
     body[data-density="compact"] table { margin-top: .75rem; }
     body[data-density="compact"] th, body[data-density="compact"] td { padding: .5rem .6rem; }
-    .topbar { position: sticky; top: 0; z-index: 500; padding-top: .25rem; padding-bottom: .75rem; background: linear-gradient(to bottom, var(--page-bg) 70%, transparent); backdrop-filter: blur(8px); }
+    .topbar { position: sticky; top: 0; z-index: 500; padding-top: .25rem; padding-bottom: .75rem; background: linear-gradient(to bottom, var(--page-bg) 70%, transparent); backdrop-filter: blur(10px); }
     .shortcuts { margin-top: .5rem; font-size: .92rem; display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
     kbd { padding: .15rem .45rem; border-radius: .35rem; border: 1px solid var(--border-color); background: var(--panel-bg); color: var(--text-color); font-size: .85em; }
-    .card { background: var(--panel-bg); border: 1px solid var(--border-color); border-radius: 1rem; padding: 1rem; margin-top: 1rem; }
-    code { color: #86efac; }
+    code { color: #f5d06f; }
     .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1rem; }
     .stack { display: flex; flex-direction: column; }
     .stack label { display: flex; flex-direction: column; font-size: .9rem; gap: .25rem; }
@@ -152,7 +249,7 @@ HTML = """
 <body>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <div id="topbar" class="topbar">
-    <h1>Henry Vault</h1>
+    <h1>Henry Vault <span id="theme-name" class="theme-badge">DarkLuxury</span></h1>
     <p class="muted">Local encrypted secrets dashboard. Unlock once; this browser uses a short-lived HttpOnly local session cookie.</p>
     <div class="card">
       <form id="login-form" class="row" onsubmit="return login(event)">
@@ -164,11 +261,13 @@ HTML = """
         <input id="environment" list="environment-options" placeholder="Environment filter" />
         <input id="secret-search" placeholder="Secret search" />
         <input id="attachment-search" placeholder="Attachment search" />
+        <input id="password-search" placeholder="Password search" />
         <button class="fixed" type="submit">Apply filters</button>
         <button class="fixed secondary" type="button" onclick="clearFilters()">Clear filters</button>
         <button class="fixed secondary" type="button" onclick="loadDoctor()">Doctor</button>
         <button class="fixed secondary" type="button" onclick="loadAudit()">Audit</button>
         <button id="theme-toggle" class="fixed secondary" type="button" onclick="toggleTheme()">Toggle theme</button>
+        <select id="theme-select" class="fixed secondary" onchange="setTheme(this.value)"></select>
         <button id="density-toggle" class="fixed secondary" type="button" onclick="toggleDensity()">Compact mode</button>
         <button class="fixed secondary" type="button" onclick="logout()">Logout</button>
       </form>
@@ -261,6 +360,30 @@ HTML = """
     </details>
   </div>
 
+  <div class="card" style="margin-top: 1rem;">
+    <details open id="passwords">
+      <summary>Passwords</summary>
+      <div class="section-body stack">
+        <div class="row">
+          <button id="password-list" class="fixed secondary" type="button" onclick="loadPasswords()">Refresh passwords</button>
+        </div>
+        <form id="add-password-form" class="stack" onsubmit="return addPassword(event)">
+          <h3>Add password</h3>
+          <label>Name <input id="password-name" required placeholder="GitHub" /></label>
+          <label>URL <input id="password-url" required placeholder="https://github.com" /></label>
+          <label>Username <input id="password-username" required placeholder="henry" /></label>
+          <label>Password <input id="password-value" type="password" required placeholder="password" /></label>
+          <label>Note <input id="password-note" placeholder="optional note" /></label>
+          <button type="submit">Add password</button>
+        </form>
+        <table>
+          <thead><tr><th>Name</th><th>URL</th><th>Username</th><th>Note</th><th>Updated</th><th>Copy</th><th>Manage</th></tr></thead>
+          <tbody id="password-rows"></tbody>
+        </table>
+      </div>
+    </details>
+  </div>
+
   <script>
     let unlocked = false;
     let csrfToken = '';
@@ -270,22 +393,43 @@ HTML = """
     let shortcutTimeout = null;
     const knownProjects = new Set();
     const knownEnvironments = new Set();
+    const THEMES = [
+      {value: 'dark-luxury', label: 'DarkLuxury'},
+      {value: 'pearl-light', label: 'Pearl Light'},
+      {value: 'royal-indigo', label: 'Royal Indigo'},
+      {value: 'emerald-velvet', label: 'Emerald Velvet'},
+      {value: 'rose-quartz', label: 'Rose Quartz'},
+      {value: 'sunset-amber', label: 'Sunset Amber'},
+    ];
 
     function csrfHeaders() {
       return csrfToken ? {'X-CSRF-Token': csrfToken} : {};
     }
 
+    function themeLabel(theme) {
+      return (THEMES.find(item => item.value === theme) || THEMES[0]).label;
+    }
+
     function applyTheme(theme) {
-      const resolved = theme === 'light' ? 'light' : 'dark';
+      const resolved = THEMES.some(item => item.value === theme) ? theme : 'dark-luxury';
       document.body.dataset.theme = resolved;
       localStorage.setItem('hv-theme', resolved);
-      document.getElementById('theme-toggle').textContent = resolved === 'light' ? 'Dark theme' : 'Toggle theme';
+      const select = document.getElementById('theme-select');
+      if (select) select.value = resolved;
+      document.getElementById('theme-toggle').textContent = 'Toggle theme';
+      document.getElementById('theme-name').textContent = themeLabel(resolved);
+    }
+
+    function setTheme(theme) {
+      applyTheme(theme);
+      setStatus(`Theme switched to ${themeLabel(document.body.dataset.theme)}.`);
     }
 
     function toggleTheme() {
-      const current = document.body.dataset.theme === 'light' ? 'light' : 'dark';
-      applyTheme(current === 'light' ? 'dark' : 'light');
-      setStatus(`Theme switched to ${document.body.dataset.theme}.`);
+      const currentIndex = Math.max(0, THEMES.findIndex(item => item.value === document.body.dataset.theme));
+      const nextTheme = THEMES[(currentIndex + 1) % THEMES.length].value;
+      applyTheme(nextTheme);
+      setStatus(`Theme switched to ${themeLabel(nextTheme)}.`);
     }
 
     function applyDensity(density) {
@@ -302,7 +446,11 @@ HTML = """
     }
 
     const storedTheme = localStorage.getItem('hv-theme');
-    applyTheme(storedTheme === 'light' ? 'light' : 'dark');
+    const themeSelect = document.getElementById('theme-select');
+    if (themeSelect) {
+      themeSelect.innerHTML = THEMES.map(item => `<option value="${escapeHtml(item.value)}">${escapeHtml(item.label)}</option>`).join('');
+    }
+    applyTheme(storedTheme === 'light' ? 'pearl-light' : storedTheme || 'dark-luxury');
     const storedDensity = localStorage.getItem('hv-density');
     applyDensity(storedDensity === 'compact' ? 'compact' : 'comfortable');
 
@@ -363,6 +511,7 @@ HTML = """
       if (event) event.preventDefault();
       await loadSecrets();
       await loadAttachments();
+      await loadPasswords();
       return false;
     }
 
@@ -371,6 +520,7 @@ HTML = """
       document.getElementById('environment').value = '';
       document.getElementById('secret-search').value = '';
       document.getElementById('attachment-search').value = '';
+      document.getElementById('password-search').value = '';
       await applyFilters();
       setStatus('Filters cleared.', 'success');
     }
@@ -448,6 +598,7 @@ HTML = """
       unlocked = true;
       document.getElementById('password').value = '';
       setStatus('Unlocked for this browser.', 'success');
+      await applyFilters();
       return false;
     }
 
@@ -459,6 +610,7 @@ HTML = """
       refreshSecretSubmitLabel();
       document.getElementById('rows').innerHTML = '';
       document.getElementById('attachment-rows').innerHTML = '';
+      document.getElementById('password-rows').innerHTML = '';
       setStatus('Logged out.');
     }
 
@@ -480,6 +632,13 @@ HTML = """
       const query = document.getElementById('attachment-search').value.trim();
       if (project) params.set('project', project);
       if (environment) params.set('environment', environment);
+      if (query) params.set('query', query);
+      return params;
+    }
+
+    function passwordQueryParams() {
+      const params = new URLSearchParams();
+      const query = document.getElementById('password-search').value.trim();
       if (query) params.set('query', query);
       return params;
     }
@@ -507,6 +666,16 @@ HTML = """
         </tr>`).join('');
     }
 
+    function renderPasswordRows(items) {
+      document.getElementById('password-rows').innerHTML = (items || []).map(p => `
+        <tr>
+          <td><code>${escapeHtml(p.name)}</code></td><td>${escapeHtml(p.url)}</td><td>${escapeHtml(p.username)}</td>
+          <td>${escapeHtml(p.note)}</td><td>${escapeHtml(p.updated_at)}</td>
+          <td><button class="fixed secondary" onclick="copyPassword('${escapeHtml(p.name)}','${escapeHtml(p.url)}','${escapeHtml(p.username)}')">Copy</button></td>
+          <td><button class="fixed danger" onclick="deletePassword('${escapeHtml(p.name)}','${escapeHtml(p.url)}','${escapeHtml(p.username)}')">Delete</button></td>
+        </tr>`).join('');
+    }
+
     async function loadSecrets() {
       if (!unlocked) { setStatus('Unlock first', 'error'); return; }
       const res = await fetch('/api/secrets?' + secretQueryParams().toString());
@@ -521,6 +690,14 @@ HTML = """
       if (!res.ok) { setStatus('Could not list attachments', 'error'); return; }
       renderAttachmentRows(await res.json());
       setStatus('Attachments loaded.');
+    }
+
+    async function loadPasswords() {
+      if (!unlocked) { setStatus('Unlock first', 'error'); return; }
+      const res = await fetch('/api/passwords?' + passwordQueryParams().toString());
+      if (!res.ok) { setStatus('Could not list passwords', 'error'); return; }
+      renderPasswordRows(await res.json());
+      setStatus('Passwords loaded.');
     }
 
     async function beginSecretEdit(name, project, environment) {
@@ -576,6 +753,46 @@ HTML = """
       setStatus(`Added attachment ${document.getElementById('attachment-name').value}.`, 'success');
       await loadAttachments();
       return false;
+    }
+
+    async function addPassword(event) {
+      event.preventDefault();
+      if (!unlocked) { setStatus('Unlock first', 'error'); return false; }
+      const payload = {
+        name: document.getElementById('password-name').value,
+        url: document.getElementById('password-url').value,
+        username: document.getElementById('password-username').value,
+        password: document.getElementById('password-value').value,
+        note: document.getElementById('password-note').value,
+      };
+      const res = await fetch('/api/passwords', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json', ...csrfHeaders()},
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) { setStatus('Add password failed', 'error'); return false; }
+      document.getElementById('password-value').value = '';
+      setStatus(`Saved password ${payload.name}.`, 'success');
+      await loadPasswords();
+      return false;
+    }
+
+    async function copyPassword(name, url, username) {
+      const params = new URLSearchParams({name, url, username});
+      const res = await fetch('/api/passwords/reveal?' + params.toString());
+      if (!res.ok) { setStatus('Copy password failed', 'error'); return; }
+      const data = await res.json();
+      await navigator.clipboard.writeText(data.password).catch(() => {});
+      setStatus(`Copied password for ${name}.`, 'success');
+    }
+
+    async function deletePassword(name, url, username) {
+      if (!confirm(`Delete password ${name}?`)) return;
+      const params = new URLSearchParams({name, url, username});
+      const res = await fetch('/api/passwords?' + params.toString(), {method: 'DELETE', headers: csrfHeaders()});
+      if (!res.ok) { setStatus('Delete password failed', 'error'); return; }
+      setStatus(`Deleted password ${name}.`, 'success');
+      await loadPasswords();
     }
 
     async function reveal(name, project, environment) {
@@ -818,6 +1035,67 @@ def create_app(
             raise HTTPException(status_code=404, detail="Secret not found")
         store.record_audit("web.secret.reveal", secret_name=name, project=project, environment=environment)
         return {"name": secret.name, "value": secret.value}
+
+    @app.get("/api/passwords")
+    def list_passwords(
+        query: Optional[str] = None,
+        store: VaultStore = Depends(store_for_session),
+    ) -> list[dict]:
+        items = store.list_passwords(query=query)
+        store.record_audit("web.password.list", message=f"count={len(items)}")
+        return [item.__dict__ for item in items]
+
+    @app.post("/api/passwords")
+    def add_password(
+        payload: AddPasswordRequest,
+        authorization: str = Header(default=""),
+        hv_session: str | None = Cookie(default=None, alias=COOKIE_NAME),
+        x_csrf_token: str = Header(default=""),
+        store: VaultStore = Depends(store_for_session),
+    ) -> dict[str, bool]:
+        csrf_guard(hv_session, authorization, x_csrf_token)
+        store.add_password(
+            PasswordInput(
+                name=payload.name,
+                url=payload.url,
+                username=payload.username,
+                password=payload.password,
+                note=payload.note,
+            )
+        )
+        store.record_audit("web.password.add", secret_name=payload.name, message=payload.url)
+        return {"ok": True}
+
+    @app.get("/api/passwords/reveal")
+    def reveal_password(
+        name: str,
+        url: str,
+        username: str,
+        store: VaultStore = Depends(store_for_session),
+    ) -> dict[str, str]:
+        item = store.get_password(name, url=url, username=username)
+        if item is None:
+            store.record_audit("web.password.reveal", secret_name=name, message=url, status="not_found")
+            raise HTTPException(status_code=404, detail="Password not found")
+        store.record_audit("web.password.reveal", secret_name=name, message=url)
+        return {"name": item.name, "url": item.url, "username": item.username, "password": item.password, "note": item.note}
+
+    @app.delete("/api/passwords")
+    def delete_password(
+        name: str,
+        url: str,
+        username: str,
+        authorization: str = Header(default=""),
+        hv_session: str | None = Cookie(default=None, alias=COOKIE_NAME),
+        x_csrf_token: str = Header(default=""),
+        store: VaultStore = Depends(store_for_session),
+    ) -> dict[str, bool]:
+        csrf_guard(hv_session, authorization, x_csrf_token)
+        deleted = store.delete_password(name, url=url, username=username)
+        store.record_audit("web.password.delete", secret_name=name, message=url, status="success" if deleted else "not_found")
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Password not found")
+        return {"ok": True}
 
     @app.get("/api/attachments")
     def list_attachments(

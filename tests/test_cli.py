@@ -3,6 +3,7 @@ import os
 from typer.testing import CliRunner
 
 from henry_vault.cli import app
+from henry_vault.store import VaultStore
 
 
 runner = CliRunner()
@@ -172,6 +173,41 @@ def test_cli_attachment_add_list_and_get_without_leaking_list_output(tmp_path, m
     assert "super-secret-key" not in audit.output
 
 
+def test_cli_password_add_list_and_get_without_leaking_password(tmp_path, monkeypatch):
+    db_path = tmp_path / "vault.db"
+    monkeypatch.setenv("HENRY_VAULT_PASSWORD", "pw")
+    assert runner.invoke(app, ["--db", str(db_path), "init"]).exit_code == 0
+
+    result = runner.invoke(
+        app,
+        [
+            "--db",
+            str(db_path),
+            "password-add",
+            "GitHub",
+            "https://github.com",
+            "henry",
+            "browser-password",
+            "--note",
+            "personal account",
+        ],
+    )
+    assert result.exit_code == 0
+    assert "Saved password GitHub" in result.output
+    assert "browser-password" not in result.output
+
+    result = runner.invoke(app, ["--db", str(db_path), "password-list"])
+    assert result.exit_code == 0
+    assert "GitHub" in result.output
+    assert "https://github.com" in result.output
+    assert "henry" in result.output
+    assert "browser-password" not in result.output
+
+    result = runner.invoke(app, ["--db", str(db_path), "password-get", "GitHub", "https://github.com", "henry"])
+    assert result.exit_code == 0
+    assert result.output.strip() == "browser-password"
+
+
 def test_cli_audit_lists_recent_events(tmp_path, monkeypatch):
     db_path = tmp_path / "vault.db"
     monkeypatch.setenv("HENRY_VAULT_PASSWORD", "pw")
@@ -249,6 +285,49 @@ def test_cli_rotate_updates_value_metadata_and_audit_without_leaking_values(tmp_
     assert "TOKEN" in result.output
     assert "old-value" not in result.output
     assert "new-value" not in result.output
+
+
+def test_cli_password_add_list_get_and_delete(tmp_path, monkeypatch):
+    db_path = tmp_path / "vault.db"
+    store = VaultStore(db_path)
+    store.init("pw")
+    monkeypatch.setenv("HENRY_VAULT_PASSWORD", "pw")
+
+    result = runner.invoke(
+        app,
+        [
+            "--db",
+            str(db_path),
+            "password-add",
+            "GitHub",
+            "https://github.com",
+            "henry",
+            "secret-pass",
+            "--note",
+            "personal account",
+        ],
+    )
+    assert result.exit_code == 0
+    assert "Saved password GitHub" in result.output
+    assert "secret-pass" not in result.output
+
+    result = runner.invoke(app, ["--db", str(db_path), "password-list"])
+    assert result.exit_code == 0
+    assert "GitHub" in result.output
+    assert "https://github.com" in result.output
+    assert "secret-pass" not in result.output
+
+    result = runner.invoke(app, ["--db", str(db_path), "password-get", "GitHub", "https://github.com", "henry"])
+    assert result.exit_code == 0
+    assert result.output.strip() == "secret-pass"
+
+    result = runner.invoke(app, ["--db", str(db_path), "password-delete", "GitHub", "https://github.com", "henry"])
+    assert result.exit_code == 0
+    assert "Deleted" in result.output
+
+    result = runner.invoke(app, ["--db", str(db_path), "password-list"])
+    assert result.exit_code == 0
+    assert "No passwords found." in result.output
 
 
 def test_cli_install_cli_creates_link(tmp_path):

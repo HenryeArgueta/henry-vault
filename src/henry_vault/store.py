@@ -78,6 +78,31 @@ class Attachment(AttachmentMetadata):
 
 
 @dataclass(frozen=True)
+class PasswordInput:
+    name: str
+    url: str
+    username: str
+    password: str
+    note: str = ""
+
+
+@dataclass(frozen=True)
+class PasswordMetadata:
+    id: int
+    name: str
+    url: str
+    username: str
+    note: str
+    created_at: str
+    updated_at: str
+
+
+@dataclass(frozen=True)
+class Password(PasswordMetadata):
+    password: str = ""
+
+
+@dataclass(frozen=True)
 class AuditEvent:
     id: int
     action: str
@@ -210,6 +235,65 @@ class VaultStore:
         with self._connect() as conn:
             cur = conn.execute("DELETE FROM secrets WHERE name=? AND project=? AND environment=?", (name, project, environment))
         return cur.rowcount > 0
+
+    def add_password(self, password: PasswordInput) -> None:
+        fernet = self._require_unlocked()
+        now = self._now()
+        encrypted_password = fernet.encrypt(password.password.encode()).decode()
+        with self._connect() as conn:
+            self._migrate_schema(conn)
+            conn.execute(
+                """
+                INSERT INTO passwords(name, url, username, encrypted_password, note, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(name, url, username) DO UPDATE SET
+                    encrypted_password=excluded.encrypted_password,
+                    note=excluded.note,
+                    updated_at=excluded.updated_at
+                """,
+                (password.name, password.url, password.username, encrypted_password, password.note, now, now),
+            )
+
+    def list_passwords(self, query: str | None = None) -> list[PasswordMetadata]:
+        self._require_unlocked()
+        clauses = []
+        params: list[object] = []
+        if query:
+            clauses.append("LOWER(name || ' ' || url || ' ' || username || ' ' || note) LIKE ?")
+            params.append(f"%{query.lower()}%")
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._connect() as conn:
+            self._migrate_schema(conn)
+            rows = conn.execute(
+                f"""
+                SELECT id, name, url, username, note, created_at, updated_at
+                FROM passwords {where} ORDER BY name, url, username
+                """,
+                params,
+            ).fetchall()
+        return [self._row_to_password_metadata(row) for row in rows]
+
+    def delete_password(self, name: str, url: str, username: str) -> bool:
+        self._require_unlocked()
+        with self._connect() as conn:
+            self._migrate_schema(conn)
+            cur = conn.execute("DELETE FROM passwords WHERE name=? AND url=? AND username=?", (name, url, username))
+        return cur.rowcount > 0
+
+    def get_password(self, name: str, url: str, username: str) -> Password | None:
+        fernet = self._require_unlocked()
+        with self._connect() as conn:
+            self._migrate_schema(conn)
+            row = conn.execute(
+                """
+                SELECT id, name, url, username, encrypted_password, note, created_at, updated_at
+                FROM passwords WHERE name=? AND url=? AND username=?
+                """,
+                (name, url, username),
+            ).fetchone()
+        if row is None:
+            return None
+        return Password(password=fernet.decrypt(row["encrypted_password"].encode()).decode(), **self._row_to_password_metadata(row).__dict__)
 
     def add_attachment(self, attachment: AttachmentInput) -> None:
         fernet = self._require_unlocked()
@@ -527,8 +611,20 @@ class VaultStore:
                 updated_at TEXT NOT NULL,
                 UNIQUE(name, project, environment)
             );
+            CREATE TABLE IF NOT EXISTS passwords (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                url TEXT NOT NULL,
+                username TEXT NOT NULL,
+                encrypted_password TEXT NOT NULL,
+                note TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(name, url, username)
+            );
             """
         )
+
 
     def _migrate_schema(self, conn: sqlite3.Connection) -> None:
         self._create_schema(conn)
@@ -603,6 +699,17 @@ class VaultStore:
             content_type=str(row["content_type"]),
             notes=str(row["notes"]),
             size=int(row["size"]),
+            created_at=str(row["created_at"]),
+            updated_at=str(row["updated_at"]),
+        )
+
+    def _row_to_password_metadata(self, row: sqlite3.Row) -> PasswordMetadata:
+        return PasswordMetadata(
+            id=int(row["id"]),
+            name=str(row["name"]),
+            url=str(row["url"]),
+            username=str(row["username"]),
+            note=str(row["note"]),
             created_at=str(row["created_at"]),
             updated_at=str(row["updated_at"]),
         )

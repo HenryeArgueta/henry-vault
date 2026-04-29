@@ -13,7 +13,7 @@ from .doctor import doctor_report
 from .errors import VaultAlreadyExists, VaultError, VaultLocked, VaultNotInitialized
 from .install import backup_schedule_command, install_cli
 from .scanner import scan_path
-from .store import DEFAULT_DB_PATH, AttachmentInput, SecretInput, VaultStore
+from .store import DEFAULT_DB_PATH, AttachmentInput, PasswordInput, SecretInput, VaultStore
 
 app = typer.Typer(help="Henry Vault: encrypted local secrets manager")
 
@@ -129,6 +129,61 @@ def delete_secret(ctx: typer.Context, name: str, project: ProjectOpt = "default"
     """Delete one secret."""
     store = _unlock(ctx.obj["db"])
     deleted = store.delete_secret(name, project=project, environment=env)
+    typer.echo("Deleted" if deleted else "Not found")
+
+
+@app.command("password-add")
+def password_add(
+    ctx: typer.Context,
+    name: str,
+    url: str,
+    username: str,
+    password: Annotated[Optional[str], typer.Argument(help="Password. Omit to prompt hidden input.")] = None,
+    note: Annotated[str, typer.Option("--note", help="Note for this password entry")] = "",
+) -> None:
+    """Add or update a website password entry."""
+    store = _unlock(ctx.obj["db"])
+    if password is None:
+        password = getpass.getpass(f"Password for {name} ({username}): ")
+    store.add_password(PasswordInput(name=name, url=url, username=username, password=password, note=note))
+    store.record_audit("password.add", secret_name=name, status="success", message=f"url={url} username={username}")
+    typer.echo(f"Saved password {name} [{url}] username={username}")
+
+
+@app.command("password-list")
+def password_list(
+    ctx: typer.Context,
+    query: Annotated[Optional[str], typer.Option("--query", help="Case-insensitive filter for name/url/username/note")] = None,
+) -> None:
+    """List password entry metadata without revealing passwords."""
+    store = _unlock(ctx.obj["db"])
+    items = store.list_passwords(query=query)
+    store.record_audit("password.list", message=f"count={len(items)}" + (f" query={query}" if query else ""))
+    if not items:
+        typer.echo("No passwords found.")
+        return
+    for item in items:
+        typer.echo(f"{item.name} url={item.url} username={item.username} note={item.note} updated={item.updated_at}")
+
+
+@app.command("password-get")
+def password_get(ctx: typer.Context, name: str, url: str, username: str) -> None:
+    """Print one password value."""
+    store = _unlock(ctx.obj["db"])
+    password = store.get_password(name, url=url, username=username)
+    if password is None:
+        store.record_audit("password.get", secret_name=name, status="not_found", message=f"url={url} username={username}")
+        raise typer.Exit(1)
+    store.record_audit("password.get", secret_name=name, message=f"url={url} username={username}")
+    typer.echo(password.password)
+
+
+@app.command("password-delete")
+def password_delete(ctx: typer.Context, name: str, url: str, username: str) -> None:
+    """Delete one password entry."""
+    store = _unlock(ctx.obj["db"])
+    deleted = store.delete_password(name, url=url, username=username)
+    store.record_audit("password.delete", secret_name=name, status="success" if deleted else "not_found", message=f"url={url} username={username}")
     typer.echo("Deleted" if deleted else "Not found")
 
 

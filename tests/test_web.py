@@ -18,7 +18,7 @@ def test_web_health_list_and_reveal(tmp_path):
     assert health.status_code == 200
     assert health.json()["ok"] is True
 
-    login = client.post("/api/login", json={"password": password})
+    login = client.post("/api/login", json={"password": "pw"})
     assert login.status_code == 200
     token = login.json()["token"]
     headers = {"Authorization": f"Bearer {token}"}
@@ -91,9 +91,9 @@ def test_web_login_rate_limits_failed_attempts(tmp_path):
 
     client = TestClient(create_app(db_path, max_failed_logins=2, lockout_seconds=60))
 
-    assert client.post("/api/login", json={"password": "wrong-1"}).status_code == 401
-    assert client.post("/api/login", json={"password": "wrong-2"}).status_code == 401
-    locked = client.post("/api/login", json={"password": "pw"})
+    assert client.post("/api/login", json={"password": "***"}).status_code == 401
+    assert client.post("/api/login", json={"password": "***"}).status_code == 401
+    locked = client.post("/api/login", json={"password": "***"})
 
     assert locked.status_code == 429
 
@@ -105,7 +105,7 @@ def test_web_login_rejects_wrong_password(tmp_path):
 
     client = TestClient(create_app(db_path))
 
-    denied = client.post("/api/login", json={"password": "wrong"})
+    denied = client.post("/api/login", json={"password": "***"})
     assert denied.status_code == 401
 
 
@@ -277,6 +277,12 @@ def test_web_index_includes_edit_search_and_attachment_controls(tmp_path):
     assert 'id="theme-toggle"' in response.text
     assert 'id="density-toggle"' in response.text
     assert 'Compact mode' in response.text
+    assert 'DarkLuxury' in response.text
+    assert 'Pearl Light' in response.text
+    assert 'Royal Indigo' in response.text
+    assert 'Emerald Velvet' in response.text
+    assert 'Rose Quartz' in response.text
+    assert 'Sunset Amber' in response.text
     assert 'id="topbar"' in response.text
     assert 'position: sticky' in response.text
     assert 'Shortcuts:' in response.text
@@ -397,3 +403,53 @@ def test_web_can_download_attachment_via_api(tmp_path):
     assert download.headers["content-type"].startswith("text/plain")
     assert "attachment" in download.headers["content-disposition"]
     assert download.content == b"code-1\ncode-2"
+
+
+def test_web_can_add_and_retrieve_password_via_api(tmp_path):
+    db_path = tmp_path / "vault.db"
+    store = VaultStore(db_path)
+    store.init("pw")
+
+    client = TestClient(create_app(db_path))
+    login = client.post("/api/login", json={"password": "pw"})
+    token = login.json()["token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    added = client.post(
+        "/api/passwords",
+        json={
+            "name": "GitHub",
+            "url": "https://github.com",
+            "username": "henry",
+            "password": "secret-pass",
+            "note": "personal account",
+        },
+        headers=headers,
+    )
+    assert added.status_code == 200
+    assert added.json()["ok"] is True
+
+    listed = client.get("/api/passwords", headers=headers)
+    assert listed.status_code == 200
+    assert listed.json()[0]["name"] == "GitHub"
+    assert listed.json()[0]["url"] == "https://github.com"
+    assert "password" not in listed.json()[0]
+
+    reveal = client.get(
+        "/api/passwords/reveal",
+        params={"name": "GitHub", "url": "https://github.com", "username": "henry"},
+        headers=headers,
+    )
+    assert reveal.status_code == 200
+    assert reveal.json()["password"] == "secret-pass"
+
+    deleted = client.delete(
+        "/api/passwords",
+        params={"name": "GitHub", "url": "https://github.com", "username": "henry"},
+        headers=headers,
+    )
+    assert deleted.status_code == 200
+    assert deleted.json()["ok"] is True
+
+    listed_again = client.get("/api/passwords", headers=headers)
+    assert listed_again.json() == []
