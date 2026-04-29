@@ -2,6 +2,18 @@
 
 Henry Vault is a local-first encrypted secrets manager with both a CLI and a web UI/API.
 
+Quick install from the latest release:
+
+```bash
+pipx install 'git+https://github.com/HenryeArgueta/henry-vault.git@v0.2.0'
+```
+
+Or install from the latest branch tip:
+
+```bash
+pipx install 'git+https://github.com/HenryeArgueta/henry-vault.git'
+```
+
 It stores secrets in an encrypted SQLite database at `~/.henry-vault/vault.db` by default.
 Secret values are encrypted at rest with Fernet. The vault encryption key is derived from your master password with Argon2id and a per-vault random salt.
 
