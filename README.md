@@ -309,7 +309,7 @@ http://127.0.0.1:8787
 
 The web UI unlocks via `/api/login`, stores the browser session in a short-lived HttpOnly `hv_session` cookie, and supports `/api/logout`. Login also returns a per-session CSRF token; the browser sends it as `X-CSRF-Token` for cookie-authenticated unsafe requests. API clients can still use the returned bearer token in the `Authorization` header. Repeated failed login attempts are rate-limited in memory.
 
-The dashboard includes buttons for listing secret metadata, running doctor checks, and viewing sanitized audit events. Doctor issues and audit events render as tables instead of raw JSON.
+The dashboard includes buttons for listing secret metadata, running doctor checks, viewing sanitized audit events, and managing passwords. The Passwords section also supports CSV export/import from the browser.
 
 Important: keep this local-only by default. Do not expose it to the public internet without TLS, stronger rate limiting, and network controls such as Tailscale, WireGuard, or Cloudflare Access.
 
