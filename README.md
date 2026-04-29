@@ -319,7 +319,13 @@ pipx install /path/to/henry-vault
 pipx upgrade henry-vault
 ```
 
-From GitHub, replace `OWNER/REPO` with your repository path:
+From GitHub, use the published tag for a stable install:
+
+```bash
+pipx install 'git+https://github.com/OWNER/REPO.git@v0.2.0'
+```
+
+You can also install from the latest branch tip:
 
 ```bash
 pipx install 'git+https://github.com/OWNER/REPO.git'
