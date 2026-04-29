@@ -322,13 +322,13 @@ pipx upgrade henry-vault
 From GitHub, use the published tag for a stable install:
 
 ```bash
-pipx install 'git+https://github.com/OWNER/REPO.git@v0.2.0'
+pipx install 'git+https://github.com/HenryeArgueta/henry-vault.git@v0.2.0'
 ```
 
 You can also install from the latest branch tip:
 
 ```bash
-pipx install 'git+https://github.com/OWNER/REPO.git'
+pipx install 'git+https://github.com/HenryeArgueta/henry-vault.git'
 pipx upgrade henry-vault
 ```
 
