@@ -243,7 +243,12 @@ class VaultStore:
                 ),
             )
 
-    def list_attachments(self, project: str | None = None, environment: str | None = None) -> list[AttachmentMetadata]:
+    def list_attachments(
+        self,
+        project: str | None = None,
+        environment: str | None = None,
+        query: str | None = None,
+    ) -> list[AttachmentMetadata]:
         self._require_unlocked()
         clauses = []
         params = []
@@ -253,6 +258,9 @@ class VaultStore:
         if environment is not None:
             clauses.append("environment=?")
             params.append(environment)
+        if query:
+            clauses.append("LOWER(name) LIKE ?")
+            params.append(f"%{query.lower()}%")
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         with self._connect() as conn:
             self._migrate_schema(conn)
@@ -264,6 +272,13 @@ class VaultStore:
                 params,
             ).fetchall()
         return [self._row_to_attachment_metadata(row) for row in rows]
+
+    def delete_attachment(self, name: str, project: str = "default", environment: str = "default") -> bool:
+        self._require_unlocked()
+        with self._connect() as conn:
+            self._migrate_schema(conn)
+            cur = conn.execute("DELETE FROM attachments WHERE name=? AND project=? AND environment=?", (name, project, environment))
+        return cur.rowcount > 0
 
     def get_attachment(self, name: str, project: str = "default", environment: str = "default") -> Attachment | None:
         fernet = self._require_unlocked()

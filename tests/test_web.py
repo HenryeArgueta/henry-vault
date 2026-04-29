@@ -7,8 +7,9 @@ from henry_vault.web import create_app
 def test_web_health_list_and_reveal(tmp_path):
     db_path = tmp_path / "vault.db"
     store = VaultStore(db_path)
-    store.init("pw")
-    store.unlock("pw")
+    password = "pw"
+    store.init(password)
+    store.unlock(password)
     store.add_secret(SecretInput(name="TOKEN", value="secret", project="demo", environment="dev"))
 
     client = TestClient(create_app(db_path))
@@ -17,7 +18,7 @@ def test_web_health_list_and_reveal(tmp_path):
     assert health.status_code == 200
     assert health.json()["ok"] is True
 
-    login = client.post("/api/login", json={"password": "pw"})
+    login = client.post("/api/login", json={"password": password})
     assert login.status_code == 200
     token = login.json()["token"]
     headers = {"Authorization": f"Bearer {token}"}
@@ -164,3 +165,235 @@ def test_web_index_includes_doctor_and_audit_controls(tmp_path):
     assert 'id="audit-events"' in response.text
     assert 'id="doctor"' not in response.text
     assert 'id="audit"' not in response.text
+
+
+def test_web_can_download_attachment_via_api(tmp_path):
+    db_path = tmp_path / "vault.db"
+    store = VaultStore(db_path)
+    store.init("pw")
+
+    client = TestClient(create_app(db_path))
+    login = client.post("/api/login", json={"password": "pw"})
+    token = login.json()["token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    client.post(
+        "/api/attachments",
+        data={"name": "RECOVERY_CODES", "project": "demo", "environment": "prod", "content_type": "text/plain"},
+        files={"file": ("recovery-codes.txt", b"code-1\ncode-2", "text/plain")},
+        headers=headers,
+    )
+
+    download = client.get("/api/attachments/download", params={"name": "RECOVERY_CODES", "project": "demo", "environment": "prod"}, headers=headers)
+    assert download.status_code == 200
+    assert download.headers["content-type"].startswith("text/plain")
+    assert "attachment" in download.headers["content-disposition"]
+    assert download.content == b"code-1\ncode-2"
+
+
+def test_web_can_delete_attachment_via_api(tmp_path):
+    db_path = tmp_path / "vault.db"
+    store = VaultStore(db_path)
+    store.init("pw")
+
+    client = TestClient(create_app(db_path))
+    login = client.post("/api/login", json={"password": "pw"})
+    token = login.json()["token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    client.post(
+        "/api/attachments",
+        data={"name": "RECOVERY_CODES", "project": "demo", "environment": "prod", "content_type": "text/plain"},
+        files={"file": ("recovery-codes.txt", b"code-1\ncode-2", "text/plain")},
+        headers=headers,
+    )
+
+    deleted = client.delete("/api/attachments", params={"name": "RECOVERY_CODES", "project": "demo", "environment": "prod"}, headers=headers)
+    assert deleted.status_code == 200
+    assert deleted.json()["ok"] is True
+
+    remaining = client.get("/api/attachments", params={"project": "demo", "environment": "prod"}, headers=headers)
+    assert all(item["name"] != "RECOVERY_CODES" for item in remaining.json())
+
+
+def test_web_api_search_filters_secrets_and_attachments(tmp_path):
+    db_path = tmp_path / "vault.db"
+    store = VaultStore(db_path)
+    store.init("pw")
+    store.unlock("pw")
+    store.add_secret(SecretInput(name="API_KEY", value="secret", project="demo", environment="prod"))
+    store.add_secret(SecretInput(name="OTHER_TOKEN", value="secret", project="demo", environment="prod"))
+    store.add_attachment(
+        __import__("henry_vault.store", fromlist=["AttachmentInput"]).AttachmentInput(
+            name="API_DOCS",
+            filename="docs.txt",
+            content=b"docs",
+            project="demo",
+            environment="prod",
+            content_type="text/plain",
+            notes="",
+        )
+    )
+    store.add_attachment(
+        __import__("henry_vault.store", fromlist=["AttachmentInput"]).AttachmentInput(
+            name="OTHER_FILE",
+            filename="other.txt",
+            content=b"other",
+            project="demo",
+            environment="prod",
+            content_type="text/plain",
+            notes="",
+        )
+    )
+
+    client = TestClient(create_app(db_path))
+    login = client.post("/api/login", json={"password": "pw"})
+    token = login.json()["token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    secrets = client.get("/api/secrets", params={"project": "demo", "environment": "prod", "query": "API"}, headers=headers)
+    assert [item["name"] for item in secrets.json()] == ["API_KEY"]
+
+    attachments = client.get("/api/attachments", params={"project": "demo", "environment": "prod", "query": "API"}, headers=headers)
+    assert [item["name"] for item in attachments.json()] == ["API_DOCS"]
+
+
+def test_web_index_includes_edit_search_and_attachment_controls(tmp_path):
+    db_path = tmp_path / "vault.db"
+    store = VaultStore(db_path)
+    store.init("pw")
+
+    client = TestClient(create_app(db_path))
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert "Add secret" in response.text
+    assert "Add attachment" in response.text
+    assert "Edit" in response.text
+    assert "Search" in response.text
+    assert "Clear filters" in response.text
+    assert "Clear edit mode" in response.text
+    assert "Toggle theme" in response.text
+    assert 'id="theme-toggle"' in response.text
+    assert 'id="density-toggle"' in response.text
+    assert 'Compact mode' in response.text
+    assert 'id="topbar"' in response.text
+    assert 'position: sticky' in response.text
+    assert 'Shortcuts:' in response.text
+    assert '<kbd>/</kbd> focus search' in response.text
+    assert '<kbd>g</kbd>' in response.text
+    assert '<kbd>d</kbd> doctor' in response.text
+    assert '<kbd>a</kbd> audit' in response.text
+    assert '<kbd>t</kbd> theme' in response.text
+    assert '<kbd>c</kbd> clear filters' in response.text
+    assert ':focus-visible' in response.text
+    assert 'button:hover' in response.text
+    assert '@media (max-width: 820px)' in response.text
+    assert 'tbody tr:nth-child(even)' in response.text
+    assert 'id="filter-form"' in response.text
+    assert 'id="secret-search"' in response.text
+    assert 'id="attachment-search"' in response.text
+    assert 'id="project-options"' in response.text
+    assert 'id="environment-options"' in response.text
+    assert 'Delete' in response.text
+    assert 'Download' in response.text
+    assert '<details open>' in response.text
+    assert 'role="status"' in response.text
+    assert 'id="toast"' in response.text
+    assert '/api/secrets' in response.text
+    assert '/api/attachments' in response.text
+
+
+def test_web_can_add_secret_and_attachment_via_api(tmp_path):
+    db_path = tmp_path / "vault.db"
+    store = VaultStore(db_path)
+    store.init("pw")
+
+    client = TestClient(create_app(db_path))
+    login = client.post("/api/login", json={"password": "pw"})
+    token = login.json()["token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    added_secret = client.post(
+        "/api/secrets",
+        json={
+            "name": "API_KEY",
+            "value": "new-secret",
+            "project": "demo",
+            "environment": "prod",
+            "tags": ["ai", "web"],
+            "notes": "created from web ui",
+        },
+        headers=headers,
+    )
+    assert added_secret.status_code == 200
+    assert added_secret.json()["ok"] is True
+
+    listed = client.get("/api/secrets", params={"project": "demo", "environment": "prod"}, headers=headers)
+    assert any(item["name"] == "API_KEY" for item in listed.json())
+
+    added_attachment = client.post(
+        "/api/attachments",
+        data={
+            "name": "RECOVERY_CODES",
+            "project": "demo",
+            "environment": "prod",
+            "content_type": "text/plain",
+            "notes": "uploaded from web ui",
+        },
+        files={"file": ("recovery-codes.txt", b"code-1\ncode-2", "text/plain")},
+        headers=headers,
+    )
+    assert added_attachment.status_code == 200
+    assert added_attachment.json()["ok"] is True
+
+    attachments = client.get("/api/attachments", params={"project": "demo", "environment": "prod"}, headers=headers)
+    assert any(item["name"] == "RECOVERY_CODES" for item in attachments.json())
+
+
+def test_web_can_delete_secret_via_api(tmp_path):
+    db_path = tmp_path / "vault.db"
+    store = VaultStore(db_path)
+    store.init("pw")
+
+    client = TestClient(create_app(db_path))
+    login = client.post("/api/login", json={"password": "pw"})
+    token = login.json()["token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    client.post(
+        "/api/secrets",
+        json={"name": "API_KEY", "value": "new-secret", "project": "demo", "environment": "prod"},
+        headers=headers,
+    )
+
+    deleted = client.delete("/api/secrets", params={"name": "API_KEY", "project": "demo", "environment": "prod"}, headers=headers)
+    assert deleted.status_code == 200
+    assert deleted.json()["ok"] is True
+
+    listed = client.get("/api/secrets", params={"project": "demo", "environment": "prod"}, headers=headers)
+    assert all(item["name"] != "API_KEY" for item in listed.json())
+
+
+def test_web_can_download_attachment_via_api(tmp_path):
+    db_path = tmp_path / "vault.db"
+    store = VaultStore(db_path)
+    store.init("pw")
+
+    client = TestClient(create_app(db_path))
+    login = client.post("/api/login", json={"password": "pw"})
+    token = login.json()["token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    client.post(
+        "/api/attachments",
+        data={"name": "RECOVERY_CODES", "project": "demo", "environment": "prod", "content_type": "text/plain"},
+        files={"file": ("recovery-codes.txt", b"code-1\ncode-2", "text/plain")},
+        headers=headers,
+    )
+
+    download = client.get("/api/attachments/download", params={"name": "RECOVERY_CODES", "project": "demo", "environment": "prod"}, headers=headers)
+    assert download.status_code == 200
+    assert download.headers["content-type"].startswith("text/plain")
+    assert "attachment" in download.headers["content-disposition"]
+    assert download.content == b"code-1\ncode-2"
