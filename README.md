@@ -2,7 +2,7 @@
 
 Henry Vault is a local-first encrypted secrets manager with both a CLI and a web UI/API.
 
-Quick install from the latest release:
+Install from the latest release:
 
 ```bash
 pipx install 'git+https://github.com/HenryeArgueta/henry-vault.git@v0.2.1'
@@ -19,11 +19,11 @@ Secret values are encrypted at rest with Fernet. The vault encryption key is der
 
 ## Get started
 
-The fastest path is:
+The quickest path is:
 
 1. Install Henry Vault.
 2. Initialize a vault.
-3. Add one secret.
+3. Add a secret.
 4. Open the web UI.
 
 ```bash
@@ -36,9 +36,9 @@ hv web --host 127.0.0.1 --port 8787
 
 Open `http://127.0.0.1:8787` and log in with your master password.
 
-For remote access, keep the server bound to `127.0.0.1` and use an SSH tunnel from your other computer.
+If you are on another computer, keep the server bound to `127.0.0.1` and use an SSH tunnel.
 
-After that, you can move on to profiles, attachments, passwords, backups, and CSV import/export.
+From there, you can explore profiles, attachments, passwords, backups, and CSV import/export.
 
 ## Features
 
