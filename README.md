@@ -37,6 +37,18 @@ Then open `http://127.0.0.1:8787` and log in with your master password.
 
 For remote access, keep the server bound to `127.0.0.1` and use an SSH tunnel from your other computer.
 
+## First 5 commands
+
+If you want the shortest possible tour, these are the first commands most people use:
+
+```bash
+hv init
+hv add API_KEY 'your-secret-value' --project demo --env dev
+hv list --project demo --env dev
+hv get API_KEY --project demo --env dev
+hv web --host 127.0.0.1 --port 8787
+```
+
 ## Features
 
 - Initialize an encrypted vault.
