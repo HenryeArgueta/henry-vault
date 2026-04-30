@@ -231,6 +231,29 @@ def test_cli_password_add_list_and_get_without_leaking_password(tmp_path, monkey
     assert result.output.strip() == "browser-password"
 
 
+def test_cli_password_get_search_mode(tmp_path, monkeypatch):
+    db_path = tmp_path / "vault.db"
+    monkeypatch.setenv("HENRY_VAULT_PASSWORD", "pw")
+    assert runner.invoke(app, ["--db", str(db_path), "init"]).exit_code == 0
+
+    runner.invoke(
+        app,
+        ["--db", str(db_path), "password-add", "GitHub", "https://github.com", "henry"],
+        input="secret123\n",
+    )
+    runner.invoke(
+        app,
+        ["--db", str(db_path), "password-add", "GitHub", "https://github.com", "henry2"],
+        input="secret456\n",
+    )
+
+    # Search by name only — should print all matching entries with passwords
+    result = runner.invoke(app, ["--db", str(db_path), "password-get", "GitHub"])
+    assert result.exit_code == 0
+    assert "secret123" in result.output
+    assert "henry" in result.output
+
+
 def test_cli_two_factor_lifecycle_for_existing_vault(tmp_path, monkeypatch):
     db_path = tmp_path / "vault.db"
     monkeypatch.setenv("HENRY_VAULT_PASSWORD", "pw")
