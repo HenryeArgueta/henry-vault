@@ -432,7 +432,7 @@ HTML = """
     .section-card { margin-top: 1rem; }
     .service-group { margin-bottom: 1.25rem; }
     .service-group:last-child { margin-bottom: 0; }
-    .service-group-header { margin-bottom: .5rem; align-items: center; }
+    .service-group-header { display: flex; margin-bottom: .5rem; align-items: center; }
     .service-group-header strong { font-size: 1rem; flex: 1 1 auto; }
     .service-field-row { display: flex; gap: .5rem; align-items: center; margin-bottom: .4rem; }
     .service-field-row input { flex: 1 1 160px; }
@@ -995,6 +995,7 @@ HTML = """
       document.getElementById('rows').innerHTML = '';
       document.getElementById('attachment-rows').innerHTML = '';
       document.getElementById('password-rows').innerHTML = '';
+      document.getElementById('service-groups').textContent = 'Unlock to load services.';
       setStatus('Logged out.');
     }
 
@@ -1191,7 +1192,7 @@ HTML = """
       const data = await res.json();
       fileInput.value = '';
       setStatus(`Imported ${data.secrets} secrets and ${data.passwords} passwords.`, 'success');
-      await Promise.all([loadSecrets(), loadPasswords(), loadAttachments()]);
+      await Promise.all([loadSecrets(), loadPasswords(), loadAttachments(), loadServices()]);
       return false;
     }
 
