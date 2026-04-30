@@ -1361,8 +1361,8 @@ HTML = """
       const container = document.getElementById('service-fields');
       const div = document.createElement('div');
       div.className = 'service-field-row';
-      div.innerHTML = '<input class="service-field-name" placeholder="Field name" />\'
-        + '<input class="service-field-value" type="password" placeholder="Value" />\'
+      div.innerHTML = '<input class="service-field-name" placeholder="Field name" />'
+        + '<input class="service-field-value" type="password" placeholder="Value" />'
         + '<button type="button" class="fixed secondary remove-btn" data-action="remove-service-field">&#8722;</button>';
       container.appendChild(div);
     }
@@ -1431,17 +1431,17 @@ HTML = """
       }
       let html = '';
       for (const [project, fields] of Object.entries(grouped)) {
-        html += '<div class="service-group">\'
-          + '<div class="service-group-header row">\'
-          + '<strong>' + escapeHtml(project) + '</strong>\'
-          + '<span class="muted">' + fields.length + ' field(s)</span>\'
-          + '<button class="fixed danger" type="button" data-action="delete-service" data-service="' + escapeHtml(project) + '">Delete service</button>\'
+        html += '<div class="service-group">'
+          + '<div class="service-group-header row">'
+          + '<strong>' + escapeHtml(project) + '</strong>'
+          + '<span class="muted">' + fields.length + ' field(s)</span>'
+          + '<button class="fixed danger" type="button" data-action="delete-service" data-service="' + escapeHtml(project) + '">Delete service</button>'
           + '</div><table><thead><tr><th>Field</th><th>Value</th><th>Copy</th></tr></thead><tbody>';
         for (const f of fields) {
-          html += '<tr><td><code>' + escapeHtml(f.name) + '</code></td>\'
-            + '<td><span class="muted">········</span></td>\'
-            + '<td><button class="fixed secondary" type="button" data-action="copy-service-field"\'
-            + ' data-name="' + escapeHtml(f.name) + '" data-project="' + escapeHtml(f.project) + '"\'
+          html += '<tr><td><code>' + escapeHtml(f.name) + '</code></td>'
+            + '<td><span class="muted">········</span></td>'
+            + '<td><button class="fixed secondary" type="button" data-action="copy-service-field"'
+            + ' data-name="' + escapeHtml(f.name) + '" data-project="' + escapeHtml(f.project) + '"'
             + ' data-environment="' + escapeHtml(f.environment) + '">Copy</button></td></tr>';
         }
         html += '</tbody></table></div>';
@@ -1481,7 +1481,11 @@ HTML = """
         const res = await fetch('/api/secrets?' + params.toString(), {method: 'DELETE', headers: csrfHeaders()});
         if (res.ok) deleted++;
       }
-      setStatus('Deleted ' + deleted + ' field(s) for service \'' + service + '\'.', 'success');
+      if (deleted === 0) {
+        setStatus("No fields found for service '" + service + "'.", 'error');
+      } else {
+        setStatus('Deleted ' + deleted + ' field(s) for service \'' + service + '\'.', 'success');
+      }
       await loadServices();
     }
 
