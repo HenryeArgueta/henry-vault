@@ -291,7 +291,7 @@ def service_get(ctx: typer.Context, service: str, env: EnvOpt = "default") -> No
         totp_code=ctx.obj.get("totp_code"),
         recovery_code=ctx.obj.get("recovery_code"),
     )
-    fields = store.list_secrets(project=slug, tags=["service"])
+    fields = store.list_secrets(project=slug, environment=env, tags=["service"])
     if not fields:
         typer.echo(f"No service found matching '{service}'.", err=True)
         raise typer.Exit(1)
@@ -334,6 +334,9 @@ def service_delete(ctx: typer.Context, service: str) -> None:
         raise typer.Exit(0)
     count = store.delete_service(slug)
     store.record_audit("service.delete", project=slug, message=f"fields={count}")
+    if count == 0:
+        typer.echo(f"No service found matching '{slug}'.", err=True)
+        raise typer.Exit(1)
     typer.echo(f"Deleted {count} field(s) for service '{slug}'.")
 
 
