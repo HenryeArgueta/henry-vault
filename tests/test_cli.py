@@ -541,6 +541,39 @@ def test_cli_run_refuses_missing_required_profile_secret_without_starting_comman
     assert "secret-value" not in result.output
 
 
+def test_cli_service_add_get_list_and_delete(tmp_path, monkeypatch):
+    db_path = tmp_path / "vault.db"
+    monkeypatch.setenv("HENRY_VAULT_PASSWORD", "pw")
+    assert runner.invoke(app, ["--db", str(db_path), "init"]).exit_code == 0
+
+    result = runner.invoke(
+        app,
+        ["--db", str(db_path), "service-add", "Discord", "BOT_TOKEN", "APP_ID"],
+        input="tok-abc\napp-123\n",
+    )
+    assert result.exit_code == 0
+    assert "Saved Discord" in result.output
+    assert "tok-abc" not in result.output
+
+    result = runner.invoke(app, ["--db", str(db_path), "service-get", "discord"])
+    assert result.exit_code == 0
+    assert "BOT_TOKEN=tok-abc" in result.output
+    assert "APP_ID=app-123" in result.output
+
+    result = runner.invoke(app, ["--db", str(db_path), "service-list"])
+    assert result.exit_code == 0
+    assert "discord" in result.output
+    assert "BOT_TOKEN" in result.output
+    assert "tok-abc" not in result.output
+
+    result = runner.invoke(app, ["--db", str(db_path), "service-delete", "discord"], input="y\n")
+    assert result.exit_code == 0
+    assert "Deleted 2 field" in result.output
+
+    result = runner.invoke(app, ["--db", str(db_path), "service-list"])
+    assert "No services found" in result.output
+
+
 def test_cli_run_allow_missing_starts_command_with_partial_profile(tmp_path, monkeypatch):
     db_path = tmp_path / "vault.db"
     output_path = tmp_path / "run-output.txt"

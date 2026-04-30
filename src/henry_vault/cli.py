@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import getpass
 import os
+import re as _re
 import subprocess
 from pathlib import Path
 from typing import Annotated, Optional
@@ -14,6 +15,11 @@ from .errors import VaultAlreadyExists, VaultError, VaultLocked, VaultNotInitial
 from .install import backup_schedule_command, install_cli
 from .scanner import scan_path
 from .store import DEFAULT_DB_PATH, AttachmentInput, CredentialTransferSummary, PasswordInput, SecretInput, VaultInitSetup, VaultStore
+
+
+def _slugify(name: str) -> str:
+    return _re.sub(r'[^a-z0-9-]+', '', name.lower().replace(' ', '-')).strip('-')
+
 
 app = typer.Typer(help="Henry Vault: encrypted local secrets manager")
 
@@ -250,6 +256,85 @@ def secret_delete(ctx: typer.Context, name: str, project: ProjectOpt = "default"
     )
     deleted = store.delete_secret(name, project=project, environment=env)
     typer.echo("Deleted" if deleted else "Not found")
+
+
+@app.command("service-add")
+def service_add(
+    ctx: typer.Context,
+    service: str,
+    fields: Annotated[list[str], typer.Argument(help="Field names to add (values prompted hidden)")],
+    env: EnvOpt = "default",
+) -> None:
+    """Add or update a named group of credentials (API keys, tokens, etc.)."""
+    slug = _slugify(service)
+    if not slug:
+        typer.echo("Invalid service name.", err=True)
+        raise typer.Exit(1)
+    store = _unlock(
+        ctx.obj["db"],
+        totp_code=ctx.obj.get("totp_code"),
+        recovery_code=ctx.obj.get("recovery_code"),
+    )
+    for field in fields:
+        value = getpass.getpass(f"Value for {field}: ")
+        store.add_secret(SecretInput(name=field, value=value, project=slug, environment=env, tags=["service"]))
+        store.record_audit("service.add", secret_name=field, project=slug, environment=env)
+    typer.echo(f"Saved {service} ({len(fields)} field(s)) as project '{slug}'.")
+
+
+@app.command("service-get")
+def service_get(ctx: typer.Context, service: str, env: EnvOpt = "default") -> None:
+    """Print all field values for a named service as FIELD=value lines."""
+    slug = _slugify(service)
+    store = _unlock(
+        ctx.obj["db"],
+        totp_code=ctx.obj.get("totp_code"),
+        recovery_code=ctx.obj.get("recovery_code"),
+    )
+    fields = store.list_secrets(project=slug, tags=["service"])
+    if not fields:
+        typer.echo(f"No service found matching '{service}'.", err=True)
+        raise typer.Exit(1)
+    for item in fields:
+        secret = store.get_secret(item.name, project=item.project, environment=item.environment)
+        if secret:
+            store.record_audit("service.get", secret_name=item.name, project=slug, environment=item.environment)
+            typer.echo(f"{item.name}={secret.value}")
+
+
+@app.command("service-list")
+def service_list(ctx: typer.Context) -> None:
+    """List all services and their field names without revealing values."""
+    store = _unlock(
+        ctx.obj["db"],
+        totp_code=ctx.obj.get("totp_code"),
+        recovery_code=ctx.obj.get("recovery_code"),
+    )
+    names = store.list_service_names()
+    if not names:
+        typer.echo("No services found.")
+        return
+    store.record_audit("service.list", message=f"count={len(names)}")
+    for name in names:
+        field_items = store.list_secrets(project=name, tags=["service"])
+        field_names = ", ".join(f.name for f in field_items)
+        typer.echo(f"{name}: [{field_names}]")
+
+
+@app.command("service-delete")
+def service_delete(ctx: typer.Context, service: str) -> None:
+    """Delete all fields belonging to a named service."""
+    slug = _slugify(service)
+    store = _unlock(
+        ctx.obj["db"],
+        totp_code=ctx.obj.get("totp_code"),
+        recovery_code=ctx.obj.get("recovery_code"),
+    )
+    if not typer.confirm(f"Delete all fields for service '{slug}'?"):
+        raise typer.Exit(0)
+    count = store.delete_service(slug)
+    store.record_audit("service.delete", project=slug, message=f"fields={count}")
+    typer.echo(f"Deleted {count} field(s) for service '{slug}'.")
 
 
 @app.command("password-add")
