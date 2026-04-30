@@ -231,6 +231,36 @@ def test_cli_password_add_list_and_get_without_leaking_password(tmp_path, monkey
     assert result.output.strip() == "browser-password"
 
 
+def test_cli_two_factor_lifecycle_for_existing_vault(tmp_path, monkeypatch):
+    db_path = tmp_path / "vault.db"
+    monkeypatch.setenv("HENRY_VAULT_PASSWORD", "pw")
+    assert runner.invoke(app, ["--db", str(db_path), "init"]).exit_code == 0
+
+    enabled = runner.invoke(app, ["--db", str(db_path), "two-factor-enable", "--recovery-codes", "2"])
+    assert enabled.exit_code == 0
+    assert "Two-factor setup enabled" in enabled.output
+    assert "Provisioning URI:" in enabled.output
+    assert "Recovery codes:" in enabled.output
+    assert VaultStore(db_path).has_two_factor_enabled() is True
+
+    recovery_code = next(line.split(".", 1)[1].strip() for line in enabled.output.splitlines() if line.strip().startswith("1."))
+
+    regenerated = runner.invoke(app, ["--db", str(db_path), "--recovery-code", recovery_code, "recovery-codes-regenerate", "--recovery-codes", "2"])
+    assert regenerated.exit_code == 0
+    assert "New recovery codes:" in regenerated.output
+
+    new_recovery_code = next(line.split(".", 1)[1].strip() for line in regenerated.output.splitlines() if line.strip().startswith("1."))
+    rotated = runner.invoke(app, ["--db", str(db_path), "--recovery-code", new_recovery_code, "totp-rotate"])
+    assert rotated.exit_code == 0
+    assert "Authenticator setup rotated" in rotated.output
+
+    final_recovery_code = next(line.split(".", 1)[1].strip() for line in regenerated.output.splitlines() if line.strip().startswith("2."))
+    disabled = runner.invoke(app, ["--db", str(db_path), "--recovery-code", final_recovery_code, "two-factor-disable"])
+    assert disabled.exit_code == 0
+    assert "Two-factor unlock disabled" in disabled.output
+    assert VaultStore(db_path).has_two_factor_enabled() is False
+
+
 def test_cli_audit_lists_recent_events(tmp_path, monkeypatch):
     db_path = tmp_path / "vault.db"
     monkeypatch.setenv("HENRY_VAULT_PASSWORD", "pw")

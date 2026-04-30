@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "henry-vault"
-version = "0.2.1"
+version = "0.3.0"
 description = "Henry Vault: encrypted local secrets manager with CLI and web UI"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -14,6 +14,7 @@ dependencies = [
   "fastapi>=0.110.0",
   "jinja2>=3.1.0",
   "python-multipart>=0.0.9",
+  "qrcode>=8.0.0",
   "typer>=0.12.0",
   "uvicorn>=0.29.0",
 ]

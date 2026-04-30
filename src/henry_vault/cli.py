@@ -13,7 +13,7 @@ from .doctor import doctor_report
 from .errors import VaultAlreadyExists, VaultError, VaultLocked, VaultNotInitialized
 from .install import backup_schedule_command, install_cli
 from .scanner import scan_path
-from .store import DEFAULT_DB_PATH, AttachmentInput, CredentialTransferSummary, PasswordInput, SecretInput, VaultStore
+from .store import DEFAULT_DB_PATH, AttachmentInput, CredentialTransferSummary, PasswordInput, SecretInput, VaultInitSetup, VaultStore
 
 app = typer.Typer(help="Henry Vault: encrypted local secrets manager")
 
@@ -27,6 +27,20 @@ def _password() -> str:
     return getpass.getpass("Master password: ")
 
 
+def _totp_code() -> str | None:
+    code = os.environ.get("HENRY_VAULT_TOTP_CODE")
+    if code:
+        return code
+    return None
+
+
+def _recovery_code() -> str | None:
+    code = os.environ.get("HENRY_VAULT_RECOVERY_CODE")
+    if code:
+        return code
+    return None
+
+
 def _backup_password(value: str | None = None) -> str:
     if value:
         return value
@@ -37,9 +51,20 @@ def _store(db: Path) -> VaultStore:
     return VaultStore(db)
 
 
-def _unlock(db: Path) -> VaultStore:
+def _unlock(db: Path, *, totp_code: str | None = None, recovery_code: str | None = None) -> VaultStore:
     store = _store(db)
-    store.unlock(_password())
+    if recovery_code:
+        store.unlock(recovery_code=recovery_code)
+    else:
+        password = _password()
+        try:
+            store.unlock(password, totp_code=totp_code)
+        except VaultLocked as exc:
+            if "Missing TOTP code" not in str(exc):
+                raise
+            if totp_code is None:
+                totp_code = getpass.getpass("TOTP code: ")
+            store.unlock(password, totp_code=totp_code)
     store.record_audit("vault.unlock", status="success")
     return store
 
@@ -49,20 +74,99 @@ ProjectOpt = Annotated[str, typer.Option("--project", help="Project name")]
 EnvOpt = Annotated[str, typer.Option("--env", help="Environment name")]
 
 
+RecoveryCodeOpt = Annotated[Optional[str], typer.Option("--recovery-code", help="Use a one-time recovery code instead of the master password", envvar="HENRY_VAULT_RECOVERY_CODE")]
+TotpCodeOpt = Annotated[Optional[str], typer.Option("--totp-code", help="TOTP code for vaults with two-factor unlock", envvar="HENRY_VAULT_TOTP_CODE")]
+EnableTwoFactorOpt = Annotated[bool, typer.Option("--with-2fa/--no-with-2fa", help="Initialize the vault with TOTP plus recovery codes")]
+RecoveryCountOpt = Annotated[int, typer.Option("--recovery-codes", help="Recovery codes to generate during init", min=1, max=20)]
+
+
 @app.callback()
-def main(ctx: typer.Context, db: DbOpt = DEFAULT_DB_PATH) -> None:
-    ctx.obj = {"db": db}
+def main(
+    ctx: typer.Context,
+    db: DbOpt = DEFAULT_DB_PATH,
+    recovery_code: RecoveryCodeOpt = None,
+    totp_code: TotpCodeOpt = None,
+) -> None:
+    ctx.obj = {"db": db, "recovery_code": recovery_code, "totp_code": totp_code}
+
+
+def _print_two_factor_setup(setup: VaultInitSetup, *, heading: str = "Two-factor setup enabled.") -> None:
+    typer.echo(heading)
+    if setup.otpauth_uri:
+        typer.echo(f"Provisioning URI: {setup.otpauth_uri}")
+    if setup.recovery_codes:
+        typer.echo("Recovery codes:")
+        for index, code in enumerate(setup.recovery_codes, start=1):
+            typer.echo(f"  {index}. {code}")
 
 
 @app.command()
-def init(ctx: typer.Context) -> None:
+def init(ctx: typer.Context, with_2fa: EnableTwoFactorOpt = False, recovery_codes: RecoveryCountOpt = 8) -> None:
     """Initialize a new encrypted vault."""
     try:
         store = _store(ctx.obj["db"])
-        store.init(_password())
+        setup: VaultInitSetup = store.init(
+            _password(),
+            enable_two_factor=with_2fa,
+            recovery_code_count=recovery_codes,
+        )
         typer.echo(f"Initialized Henry Vault at {store.db_path}")
+        if setup.totp_secret:
+            _print_two_factor_setup(setup)
     except VaultAlreadyExists as exc:
         raise typer.BadParameter(str(exc)) from exc
+
+
+@app.command("two-factor-enable")
+def two_factor_enable(ctx: typer.Context, recovery_codes: RecoveryCountOpt = 8) -> None:
+    """Enable authenticator-app 2FA for an existing unlocked vault."""
+    password = _password()
+    store = _store(ctx.obj["db"])
+    store.unlock(password)
+    setup = store.enable_two_factor(password, recovery_code_count=recovery_codes)
+    store.record_audit("two_factor.enable", status="success")
+    _print_two_factor_setup(setup)
+
+
+@app.command("recovery-codes-regenerate")
+def recovery_codes_regenerate(ctx: typer.Context, recovery_codes: RecoveryCountOpt = 8) -> None:
+    """Regenerate one-time recovery codes and invalidate old unused codes."""
+    store = _unlock(
+        ctx.obj["db"],
+        totp_code=ctx.obj.get("totp_code"),
+        recovery_code=ctx.obj.get("recovery_code"),
+    )
+    codes = store.regenerate_recovery_codes(recovery_code_count=recovery_codes)
+    store.record_audit("two_factor.recovery_codes.regenerate", status="success", message=f"count={len(codes)}")
+    typer.echo("New recovery codes:")
+    for index, code in enumerate(codes, start=1):
+        typer.echo(f"  {index}. {code}")
+
+
+@app.command("totp-rotate")
+def totp_rotate(ctx: typer.Context) -> None:
+    """Rotate the authenticator-app TOTP secret."""
+    store = _unlock(
+        ctx.obj["db"],
+        totp_code=ctx.obj.get("totp_code"),
+        recovery_code=ctx.obj.get("recovery_code"),
+    )
+    setup = store.rotate_totp_secret()
+    store.record_audit("two_factor.totp.rotate", status="success")
+    _print_two_factor_setup(setup, heading="Authenticator setup rotated.")
+
+
+@app.command("two-factor-disable")
+def two_factor_disable(ctx: typer.Context) -> None:
+    """Disable authenticator-app 2FA and invalidate recovery codes."""
+    store = _unlock(
+        ctx.obj["db"],
+        totp_code=ctx.obj.get("totp_code"),
+        recovery_code=ctx.obj.get("recovery_code"),
+    )
+    store.disable_two_factor(_password())
+    store.record_audit("two_factor.disable", status="success")
+    typer.echo("Two-factor unlock disabled.")
 
 
 @app.command()
@@ -76,7 +180,11 @@ def add(
     notes: Annotated[str, typer.Option("--notes", help="Notes for this secret")] = "",
 ) -> None:
     """Add or update a secret."""
-    store = _unlock(ctx.obj["db"])
+    store = _unlock(
+        ctx.obj["db"],
+        totp_code=ctx.obj.get("totp_code"),
+        recovery_code=ctx.obj.get("recovery_code"),
+    )
     if value is None:
         value = getpass.getpass(f"Value for {name}: ")
     store.add_secret(SecretInput(name=name, value=value, project=project, environment=env, tags=list(tag), notes=notes))
@@ -87,7 +195,11 @@ def add(
 @app.command("get")
 def get_secret(ctx: typer.Context, name: str, project: ProjectOpt = "default", env: EnvOpt = "default") -> None:
     """Print one secret value."""
-    store = _unlock(ctx.obj["db"])
+    store = _unlock(
+        ctx.obj["db"],
+        totp_code=ctx.obj.get("totp_code"),
+        recovery_code=ctx.obj.get("recovery_code"),
+    )
     secret = store.get_secret(name, project=project, environment=env)
     if secret is None:
         store.record_audit("secret.get", secret_name=name, project=project, environment=env, status="not_found")
@@ -105,7 +217,11 @@ def list_secrets(
     tag: Annotated[list[str], typer.Option("--tag", help="Require this tag; repeat for multiple tags")] = [],
 ) -> None:
     """List secret metadata without values."""
-    store = _unlock(ctx.obj["db"])
+    store = _unlock(
+        ctx.obj["db"],
+        totp_code=ctx.obj.get("totp_code"),
+        recovery_code=ctx.obj.get("recovery_code"),
+    )
     items = store.list_secrets(project=project, environment=env, query=query, tags=list(tag))
     filters = []
     if query:
@@ -127,7 +243,11 @@ def list_secrets(
 @app.command("delete")
 def delete_secret(ctx: typer.Context, name: str, project: ProjectOpt = "default", env: EnvOpt = "default") -> None:
     """Delete one secret."""
-    store = _unlock(ctx.obj["db"])
+    store = _unlock(
+        ctx.obj["db"],
+        totp_code=ctx.obj.get("totp_code"),
+        recovery_code=ctx.obj.get("recovery_code"),
+    )
     deleted = store.delete_secret(name, project=project, environment=env)
     typer.echo("Deleted" if deleted else "Not found")
 
@@ -142,7 +262,11 @@ def password_add(
     note: Annotated[str, typer.Option("--note", help="Note for this password entry")] = "",
 ) -> None:
     """Add or update a website password entry."""
-    store = _unlock(ctx.obj["db"])
+    store = _unlock(
+        ctx.obj["db"],
+        totp_code=ctx.obj.get("totp_code"),
+        recovery_code=ctx.obj.get("recovery_code"),
+    )
     if password is None:
         password = getpass.getpass(f"Password for {name} ({username}): ")
     store.add_password(PasswordInput(name=name, url=url, username=username, password=password, note=note))
@@ -156,7 +280,11 @@ def password_list(
     query: Annotated[Optional[str], typer.Option("--query", help="Case-insensitive filter for name/url/username/note")] = None,
 ) -> None:
     """List password entry metadata without revealing passwords."""
-    store = _unlock(ctx.obj["db"])
+    store = _unlock(
+        ctx.obj["db"],
+        totp_code=ctx.obj.get("totp_code"),
+        recovery_code=ctx.obj.get("recovery_code"),
+    )
     items = store.list_passwords(query=query)
     store.record_audit("password.list", message=f"count={len(items)}" + (f" query={query}" if query else ""))
     if not items:
@@ -169,7 +297,11 @@ def password_list(
 @app.command("password-get")
 def password_get(ctx: typer.Context, name: str, url: str, username: str) -> None:
     """Print one password value."""
-    store = _unlock(ctx.obj["db"])
+    store = _unlock(
+        ctx.obj["db"],
+        totp_code=ctx.obj.get("totp_code"),
+        recovery_code=ctx.obj.get("recovery_code"),
+    )
     password = store.get_password(name, url=url, username=username)
     if password is None:
         store.record_audit("password.get", secret_name=name, status="not_found", message=f"url={url} username={username}")
@@ -181,7 +313,11 @@ def password_get(ctx: typer.Context, name: str, url: str, username: str) -> None
 @app.command("password-delete")
 def password_delete(ctx: typer.Context, name: str, url: str, username: str) -> None:
     """Delete one password entry."""
-    store = _unlock(ctx.obj["db"])
+    store = _unlock(
+        ctx.obj["db"],
+        totp_code=ctx.obj.get("totp_code"),
+        recovery_code=ctx.obj.get("recovery_code"),
+    )
     deleted = store.delete_password(name, url=url, username=username)
     store.record_audit("password.delete", secret_name=name, status="success" if deleted else "not_found", message=f"url={url} username={username}")
     typer.echo("Deleted" if deleted else "Not found")
@@ -198,7 +334,11 @@ def attachment_add(
     notes: Annotated[str, typer.Option("--notes", help="Notes for this attachment")] = "",
 ) -> None:
     """Add or update an encrypted file attachment."""
-    store = _unlock(ctx.obj["db"])
+    store = _unlock(
+        ctx.obj["db"],
+        totp_code=ctx.obj.get("totp_code"),
+        recovery_code=ctx.obj.get("recovery_code"),
+    )
     content = path.read_bytes()
     store.add_attachment(
         AttachmentInput(
@@ -222,7 +362,11 @@ def attachment_list(
     env: Annotated[Optional[str], typer.Option("--env")] = None,
 ) -> None:
     """List encrypted attachment metadata without content."""
-    store = _unlock(ctx.obj["db"])
+    store = _unlock(
+        ctx.obj["db"],
+        totp_code=ctx.obj.get("totp_code"),
+        recovery_code=ctx.obj.get("recovery_code"),
+    )
     items = store.list_attachments(project=project, environment=env)
     store.record_audit("attachment.list", project=project, environment=env, message=f"count={len(items)}")
     if not items:
@@ -241,7 +385,11 @@ def attachment_get(
     env: EnvOpt = "default",
 ) -> None:
     """Write one decrypted attachment to a file."""
-    store = _unlock(ctx.obj["db"])
+    store = _unlock(
+        ctx.obj["db"],
+        totp_code=ctx.obj.get("totp_code"),
+        recovery_code=ctx.obj.get("recovery_code"),
+    )
     attachment = store.get_attachment(name, project=project, environment=env)
     if attachment is None:
         store.record_audit("attachment.get", secret_name=name, project=project, environment=env, status="not_found")
@@ -255,7 +403,11 @@ def attachment_get(
 @app.command("export-env")
 def export_env(ctx: typer.Context, project: Annotated[Optional[str], typer.Option("--project")] = None, env: Annotated[Optional[str], typer.Option("--env")] = None) -> None:
     """Print shell export lines for matching secrets."""
-    store = _unlock(ctx.obj["db"])
+    store = _unlock(
+        ctx.obj["db"],
+        totp_code=ctx.obj.get("totp_code"),
+        recovery_code=ctx.obj.get("recovery_code"),
+    )
     typer.echo(store.export_env(project=project, environment=env))
 
 
@@ -268,7 +420,11 @@ def import_env(
     tag: Annotated[list[str], typer.Option("--tag", help="Tag for imported secrets")] = [],
 ) -> None:
     """Import KEY=VALUE pairs from a .env file."""
-    store = _unlock(ctx.obj["db"])
+    store = _unlock(
+        ctx.obj["db"],
+        totp_code=ctx.obj.get("totp_code"),
+        recovery_code=ctx.obj.get("recovery_code"),
+    )
     imported = store.import_env_file(path, project=project, environment=env, tags=list(tag))
     typer.echo(f"Imported {len(imported)} secrets into {project}/{env}")
 
@@ -276,7 +432,11 @@ def import_env(
 @app.command("export-credentials")
 def export_credentials(ctx: typer.Context, path: Path) -> None:
     """Export secrets and passwords to a single CSV file."""
-    store = _unlock(ctx.obj["db"])
+    store = _unlock(
+        ctx.obj["db"],
+        totp_code=ctx.obj.get("totp_code"),
+        recovery_code=ctx.obj.get("recovery_code"),
+    )
     summary = store.export_credentials(path)
     store.record_audit("credentials.export", message=f"path={path.name} secrets={summary.secrets} passwords={summary.passwords}")
     typer.echo(f"Exported {summary.secrets} secrets and {summary.passwords} passwords to {path}")
@@ -285,7 +445,11 @@ def export_credentials(ctx: typer.Context, path: Path) -> None:
 @app.command("import-credentials")
 def import_credentials(ctx: typer.Context, path: Path) -> None:
     """Import secrets and passwords from a single CSV file."""
-    store = _unlock(ctx.obj["db"])
+    store = _unlock(
+        ctx.obj["db"],
+        totp_code=ctx.obj.get("totp_code"),
+        recovery_code=ctx.obj.get("recovery_code"),
+    )
     summary = store.import_credentials(path)
     store.record_audit("credentials.import", message=f"path={path.name} secrets={summary.secrets} passwords={summary.passwords}")
     typer.echo(f"Imported {summary.secrets} secrets and {summary.passwords} passwords from {path}")
@@ -298,7 +462,11 @@ def backup_export(
     backup_password: Annotated[Optional[str], typer.Option("--backup-password", help="Backup encryption password")] = None,
 ) -> None:
     """Export all secrets to an encrypted backup bundle."""
-    store = _unlock(ctx.obj["db"])
+    store = _unlock(
+        ctx.obj["db"],
+        totp_code=ctx.obj.get("totp_code"),
+        recovery_code=ctx.obj.get("recovery_code"),
+    )
     export_backup(store, path, backup_password=_backup_password(backup_password))
     typer.echo(f"Encrypted backup written to {path}")
 
@@ -310,7 +478,11 @@ def backup_import(
     backup_password: Annotated[Optional[str], typer.Option("--backup-password", help="Backup encryption password")] = None,
 ) -> None:
     """Import secrets from an encrypted backup bundle into the unlocked vault."""
-    store = _unlock(ctx.obj["db"])
+    store = _unlock(
+        ctx.obj["db"],
+        totp_code=ctx.obj.get("totp_code"),
+        recovery_code=ctx.obj.get("recovery_code"),
+    )
     count = import_backup(store, path, backup_password=_backup_password(backup_password))
     typer.echo(f"Imported {count} secrets from {path}")
 
@@ -339,7 +511,11 @@ def scan(
     """Scan files for likely leaked secrets without printing full values."""
     known = None
     if match_vault:
-        store = _unlock(ctx.obj["db"])
+        store = _unlock(
+            ctx.obj["db"],
+            totp_code=ctx.obj.get("totp_code"),
+            recovery_code=ctx.obj.get("recovery_code"),
+        )
         known = store.secrets_dict()
     findings = scan_path(path, known_secret_values=known)
     if match_vault:
@@ -356,7 +532,11 @@ def scan(
 @app.command("audit")
 def audit(ctx: typer.Context, limit: Annotated[int, typer.Option("--limit", help="Maximum events to show")] = 50) -> None:
     """List recent audit events without secret values."""
-    store = _unlock(ctx.obj["db"])
+    store = _unlock(
+        ctx.obj["db"],
+        totp_code=ctx.obj.get("totp_code"),
+        recovery_code=ctx.obj.get("recovery_code"),
+    )
     events = store.list_audit_events(limit=limit)
     for event in events:
         subject = event.secret_name or "-"
@@ -374,7 +554,11 @@ def set_metadata(
     rotation_url: Annotated[Optional[str], typer.Option("--rotation-url", help="Rotation URL or instructions link")] = None,
 ) -> None:
     """Set rotation metadata for one secret."""
-    store = _unlock(ctx.obj["db"])
+    store = _unlock(
+        ctx.obj["db"],
+        totp_code=ctx.obj.get("totp_code"),
+        recovery_code=ctx.obj.get("recovery_code"),
+    )
     updated = store.set_secret_metadata(name, project=project, environment=env, expires_at=expires_at, rotation_url=rotation_url)
     if not updated:
         raise typer.Exit(1)
@@ -393,7 +577,11 @@ def rotate_secret(
     rotation_url: Annotated[Optional[str], typer.Option("--rotation-url", help="Rotation URL or instructions link")] = None,
 ) -> None:
     """Rotate an existing secret value without printing it."""
-    store = _unlock(ctx.obj["db"])
+    store = _unlock(
+        ctx.obj["db"],
+        totp_code=ctx.obj.get("totp_code"),
+        recovery_code=ctx.obj.get("recovery_code"),
+    )
     existing = store.get_secret(name, project=project, environment=env)
     if existing is None:
         store.record_audit("secret.rotate", secret_name=name, project=project, environment=env, status="not_found")
@@ -416,7 +604,11 @@ def profile_set(
     notes: Annotated[str, typer.Option("--notes", help="Notes for this profile")] = "",
 ) -> None:
     """Create or replace a project/environment required-secret profile."""
-    store = _unlock(ctx.obj["db"])
+    store = _unlock(
+        ctx.obj["db"],
+        totp_code=ctx.obj.get("totp_code"),
+        recovery_code=ctx.obj.get("recovery_code"),
+    )
     store.set_project_profile(project, env, required_secrets=list(required), notes=notes)
     store.record_audit("profile.set", project=project, environment=env, message=f"required_count={len(set(required))}")
     typer.echo(f"Saved profile {project}/{env}")
@@ -429,7 +621,11 @@ def profile_list(
     env: Annotated[Optional[str], typer.Option("--env", help="Only list this environment")] = None,
 ) -> None:
     """List project/environment required-secret profiles."""
-    store = _unlock(ctx.obj["db"])
+    store = _unlock(
+        ctx.obj["db"],
+        totp_code=ctx.obj.get("totp_code"),
+        recovery_code=ctx.obj.get("recovery_code"),
+    )
     profiles = store.list_project_profiles(project=project, environment=env)
     store.record_audit("profile.list", project=project, environment=env, message=f"count={len(profiles)}")
     if not profiles:
@@ -443,7 +639,11 @@ def profile_list(
 @app.command("profile-delete")
 def profile_delete(ctx: typer.Context, project: ProjectOpt = "default", env: EnvOpt = "default") -> None:
     """Delete one project/environment profile."""
-    store = _unlock(ctx.obj["db"])
+    store = _unlock(
+        ctx.obj["db"],
+        totp_code=ctx.obj.get("totp_code"),
+        recovery_code=ctx.obj.get("recovery_code"),
+    )
     deleted = store.delete_project_profile(project, env)
     store.record_audit("profile.delete", project=project, environment=env, status="success" if deleted else "not_found")
     typer.echo("Deleted" if deleted else "Not found")
@@ -457,7 +657,11 @@ def doctor(
     env: Annotated[Optional[str], typer.Option("--env", help="Only check this environment")] = None,
 ) -> None:
     """Check vault hygiene: expirations and rotation metadata."""
-    store = _unlock(ctx.obj["db"])
+    store = _unlock(
+        ctx.obj["db"],
+        totp_code=ctx.obj.get("totp_code"),
+        recovery_code=ctx.obj.get("recovery_code"),
+    )
     report = doctor_report(store, expiring_days=expiring_days, project=project, environment=env)
     if report.ok:
         scope = f" [{project or '*'}/{env or '*'}]" if project or env else ""
@@ -513,7 +717,11 @@ def run_command(
     """Run a command with matching secrets injected into its environment."""
     if not command:
         raise typer.BadParameter("Provide a command after --")
-    store = _unlock(ctx.obj["db"])
+    store = _unlock(
+        ctx.obj["db"],
+        totp_code=ctx.obj.get("totp_code"),
+        recovery_code=ctx.obj.get("recovery_code"),
+    )
     secrets = store.secrets_dict(project=project, environment=env)
     if project is not None and env is not None and not allow_missing:
         profiles = store.list_project_profiles(project=project, environment=env)

@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import base64
+import hashlib
+import io
+import re
 import secrets
 import tempfile
 from dataclasses import dataclass
@@ -7,12 +11,14 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
+import qrcode
 from fastapi import Cookie, Depends, File, FastAPI, Form, Header, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from qrcode.image.svg import SvgPathImage
 
 from .doctor import doctor_report
-from .errors import VaultLocked, VaultNotInitialized
+from .errors import VaultAlreadyExists, VaultLocked, VaultNotInitialized
 from .store import AttachmentInput, DEFAULT_DB_PATH, PasswordInput, SecretInput, VaultStore
 
 
@@ -34,12 +40,20 @@ class AddPasswordRequest(BaseModel):
 
 
 class LoginRequest(BaseModel):
+    password: str | None = None
+    totp_code: str | None = None
+    recovery_code: str | None = None
+
+
+class VaultInitRequest(BaseModel):
     password: str
+    enable_two_factor: bool = True
+    recovery_code_count: int = Field(default=8, ge=1, le=20)
 
 
 @dataclass
 class Session:
-    password: str
+    vault_key: bytes
     expires_at: datetime
     csrf_token: str
 
@@ -51,6 +65,19 @@ class FailedLoginState:
 
 
 COOKIE_NAME = "hv_session"
+
+
+def _build_qr_svg(otpauth_uri: str | None) -> str | None:
+    if not otpauth_uri:
+        return None
+    qr = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_M, box_size=8, border=2)
+    qr.add_data(otpauth_uri)
+    qr.make(fit=True)
+    image = qr.make_image(image_factory=SvgPathImage)
+    svg = image.to_string()
+    if isinstance(svg, bytes):
+        return svg.decode()
+    return str(svg)
 
 
 HTML = """
@@ -80,8 +107,8 @@ HTML = """
         var(--page-bg);
       color: var(--text-color);
       font-family: "Inter", "Segoe UI", system-ui, sans-serif;
-      margin: 2rem;
-      max-width: 1200px;
+      margin: 2rem auto;
+      width: min(1200px, calc(100vw - 4rem));
     }
     body[data-theme="pearl-light"] {
       color-scheme: light;
@@ -156,7 +183,8 @@ HTML = """
     h1 {
       font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
       letter-spacing: .04em;
-      margin-bottom: .25rem;
+      margin: 0;
+      line-height: 1.05;
     }
     .theme-badge {
       display: inline-flex;
@@ -172,6 +200,19 @@ HTML = """
       font-size: .8rem;
       text-transform: uppercase;
       letter-spacing: .12em;
+    }
+    .hero-title {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: center;
+      gap: .65rem;
+    }
+    .hero-subtitle {
+      max-width: 68ch;
+      margin: .5rem auto 0;
+      line-height: 1.55;
+      text-align: center;
     }
     input, button, textarea, select { padding: .6rem; border-radius: .5rem; border: 1px solid var(--border-color); margin: .25rem; }
     input, textarea { background: var(--input-bg); color: var(--text-color); }
@@ -199,6 +240,117 @@ HTML = """
       margin-top: 1rem;
       box-shadow: 0 20px 60px rgba(0, 0, 0, 0.18);
     }
+    .topbar .card {
+      padding: 1.25rem 1.35rem;
+      margin-top: .9rem;
+    }
+    .topbar .card h2,
+    .topbar .card h3 {
+      margin-top: 0;
+      margin-bottom: .45rem;
+    }
+    .topbar .card .row {
+      gap: .75rem .9rem;
+    }
+    .topbar .card .row > * {
+      flex: 1 1 210px;
+    }
+    .topbar .shortcuts {
+      justify-content: center;
+      padding-top: .85rem;
+      margin-top: 1.1rem;
+      border-top: 1px solid var(--border-color);
+    }
+    .topbar .shortcuts span:first-child {
+      font-weight: 600;
+      color: var(--text-color);
+    }
+    .topbar .shortcuts span:not(:first-child) {
+      opacity: .9;
+    }
+    .topbar .top-group + .top-group {
+      margin-top: 1.15rem;
+      padding-top: 1.15rem;
+      border-top: 1px solid var(--border-color);
+    }
+    .section-label {
+      margin-bottom: .45rem;
+      font-size: .76rem;
+      letter-spacing: .14em;
+      text-transform: uppercase;
+      color: var(--muted-color);
+    }
+    .topbar .split-row {
+      width: 100%;
+    }
+    .topbar .split-row:first-of-type > * {
+      flex: 1 1 180px;
+    }
+    .topbar .split-row:last-of-type > * {
+      flex: 0 0 auto;
+    }
+    #setup-form {
+      gap: .85rem;
+    }
+    #login-form {
+      align-items: stretch;
+    }
+    #filter-form {
+      align-items: stretch;
+      margin-top: .25rem;
+    }
+    #filter-form button,
+    #filter-form select {
+      min-width: 120px;
+    }
+    #passwords .row {
+      align-items: stretch;
+    }
+    #passwords .subgroup + .subgroup {
+      margin-top: 1rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border-color);
+    }
+    #passwords .credentials-tools .row {
+      align-items: stretch;
+    }
+    #credentials-import-form {
+      flex: 1 1 260px;
+    }
+    #add-password-form {
+      max-width: 720px;
+      margin: 0 auto;
+    }
+    .qr-shell {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 240px;
+      padding: 1rem;
+      border-radius: 1rem;
+      background: #fff;
+      border: 1px solid rgba(17, 24, 39, 0.08);
+    }
+    .qr-shell svg {
+      width: min(100%, 240px);
+      height: auto;
+      display: block;
+    }
+    .recovery-codes {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      padding-left: 1.4rem;
+      margin: 0;
+    }
+    .recovery-codes li {
+      margin: .35rem 0;
+      letter-spacing: .06em;
+    }
+    .setup-result strong {
+      letter-spacing: .04em;
+    }
+    .stack code {
+      word-break: break-all;
+    }
     body[data-density="compact"] .card { padding: .75rem; }
     body[data-density="compact"] .topbar { padding-bottom: .5rem; }
     body[data-density="compact"] .shortcuts { margin-top: .35rem; }
@@ -208,9 +360,10 @@ HTML = """
     .shortcuts { margin-top: .5rem; font-size: .92rem; display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
     kbd { padding: .15rem .45rem; border-radius: .35rem; border: 1px solid var(--border-color); background: var(--panel-bg); color: var(--text-color); font-size: .85em; }
     code { color: #f5d06f; }
-    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1rem; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1.15rem; }
     .stack { display: flex; flex-direction: column; }
-    .stack label { display: flex; flex-direction: column; font-size: .9rem; gap: .25rem; }
+    .stack label { display: flex; flex-direction: column; font-size: .9rem; gap: .3rem; }
+    .stack h2, .stack h3 { margin-bottom: .2rem; }
     .row { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
     .row > * { flex: 1 1 180px; }
     .row .fixed { flex: 0 0 auto; }
@@ -226,7 +379,7 @@ HTML = """
       max-width: min(420px, calc(100vw - 2rem));
       padding: .8rem 1rem;
       border-radius: .75rem;
-      background: rgba(15, 23, 42, .96);
+      background: linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0)), var(--panel-bg);
       border: 1px solid var(--border-color);
       color: var(--text-color);
       box-shadow: 0 10px 30px rgba(15, 23, 42, .35);
@@ -238,8 +391,9 @@ HTML = """
     .toast.visible { opacity: 1; transform: translateY(0); }
     .toast.success { border-color: #166534; }
     .toast.error { border-color: #7f1d1d; }
+    .section-card { margin-top: 1rem; }
     @media (max-width: 820px) {
-      body { margin: 1rem; }
+      body { margin: 1rem auto; width: calc(100vw - 2rem); }
       .row { flex-direction: column; align-items: stretch; }
       .row > * { width: 100%; }
       table { display: block; overflow-x: auto; white-space: nowrap; }
@@ -250,28 +404,80 @@ HTML = """
 <body>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <div id="topbar" class="topbar">
-    <h1>Henry Vault <span id="theme-name" class="theme-badge">DarkLuxury</span></h1>
-    <p class="muted">Local encrypted secrets dashboard. Unlock once; this browser uses a short-lived HttpOnly local session cookie.</p>
-    <div class="card">
-      <form id="login-form" class="row" onsubmit="return login(event)">
-        <input id="password" class="fixed" type="password" placeholder="Master password" />
-        <button class="fixed" type="submit">Unlock</button>
+    <h1 class="hero-title">Henry Vault <span id="theme-name" class="theme-badge">DarkLuxury</span></h1>
+    <p class="muted hero-subtitle">Local encrypted secrets dashboard. Unlock once; this browser uses a short-lived HttpOnly local session cookie.</p>
+    <div class="card hidden" id="setup-card">
+      <h2>Create a new vault</h2>
+      <p class="muted">After creating the vault, scan the QR code in your authenticator app. Recovery codes are shown once.</p>
+      <form id="setup-form" class="stack">
+        <div class="row">
+          <label>Master password <input id="setup-password" class="fixed" type="password" placeholder="New master password" required /></label>
+          <label>Confirm password <input id="setup-confirm" class="fixed" type="password" placeholder="Confirm master password" required /></label>
+        </div>
+        <div class="row">
+          <label class="fixed"><input id="setup-enable-2fa" type="checkbox" checked /> Enable authenticator app + recovery codes</label>
+          <label>Recovery codes
+            <select id="setup-recovery-count" class="fixed">
+              <option value="6">6</option>
+              <option value="8" selected>8</option>
+              <option value="10">10</option>
+              <option value="12">12</option>
+            </select>
+          </label>
+          <button class="fixed" type="submit">Create vault</button>
+        </div>
       </form>
-      <form id="filter-form" class="row" onsubmit="return applyFilters(event)">
-        <input id="project" list="project-options" placeholder="Project filter" />
-        <input id="environment" list="environment-options" placeholder="Environment filter" />
-        <input id="secret-search" placeholder="Secret search" />
-        <input id="attachment-search" placeholder="Attachment search" />
-        <input id="password-search" placeholder="Password search" />
-        <button class="fixed" type="submit">Apply filters</button>
-        <button class="fixed secondary" type="button" onclick="clearFilters()">Clear filters</button>
-        <button class="fixed secondary" type="button" onclick="loadDoctor()">Doctor</button>
-        <button class="fixed secondary" type="button" onclick="loadAudit()">Audit</button>
-        <button id="theme-toggle" class="fixed secondary" type="button" onclick="toggleTheme()">Toggle theme</button>
-        <select id="theme-select" class="fixed secondary" onchange="setTheme(this.value)"></select>
-        <button id="density-toggle" class="fixed secondary" type="button" onclick="toggleDensity()">Compact mode</button>
-        <button class="fixed secondary" type="button" onclick="logout()">Logout</button>
-      </form>
+    </div>
+    <div class="card hidden" id="setup-result">
+      <h2>Save these recovery codes now</h2>
+      <p class="muted">This screen appears only once. Recovery codes are shown once. Store the QR code and recovery codes in a safe place before continuing.</p>
+      <div class="grid">
+        <div class="stack">
+          <h3>Authenticator QR</h3>
+          <div id="setup-qr" class="qr-shell" aria-label="Authenticator provisioning QR code"></div>
+          <p class="muted">Provisioning URI: <code id="setup-uri"></code></p>
+        </div>
+        <div class="stack">
+          <h3>Recovery codes</h3>
+          <ol id="setup-recovery-codes" class="recovery-codes"></ol>
+        </div>
+      </div>
+      <div class="row">
+        <button class="fixed secondary" type="button" data-action="dismiss-setup-result">I saved these codes</button>
+      </div>
+    </div>
+    <div class="card hidden" id="login-card">
+      <div class="top-group">
+        <div class="section-label">Unlock</div>
+        <form id="login-form" class="row">
+          <input id="password" class="fixed" type="password" placeholder="Master password" />
+          <input id="totp-code" class="fixed" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="Authenticator code (optional)" />
+          <input id="recovery-code" class="fixed" type="text" autocomplete="off" placeholder="Recovery code (optional)" />
+          <button class="fixed" type="submit">Unlock</button>
+        </form>
+      </div>
+      <div class="top-group">
+        <div class="section-label">Search and actions</div>
+        <form id="filter-form" class="stack">
+          <div class="row split-row">
+            <input id="project" list="project-options" placeholder="Project filter" />
+            <input id="environment" list="environment-options" placeholder="Environment filter" />
+            <input id="secret-search" placeholder="Secret search" />
+            <input id="attachment-search" placeholder="Attachment search" />
+            <input id="password-search" placeholder="Password search" />
+          </div>
+          <div class="row split-row">
+            <button class="fixed" type="submit">Apply filters</button>
+            <button class="fixed secondary" type="button" data-action="clear-filters">Clear filters</button>
+            <button class="fixed secondary" type="button" data-action="doctor">Doctor</button>
+            <button class="fixed secondary" type="button" data-action="audit">Audit</button>
+            <button id="theme-toggle" class="fixed secondary" type="button" data-action="toggle-theme">Toggle theme</button>
+            <select id="theme-select" class="fixed secondary"></select>
+            <button id="density-toggle" class="fixed secondary" type="button" data-action="toggle-density">Compact mode</button>
+            <button class="fixed secondary" type="button" data-action="logout">Logout</button>
+          </div>
+        </form>
+      </div>
       <div class="shortcuts muted">
         <span>Shortcuts:</span>
         <span><kbd>/</kbd> focus search</span>
@@ -288,7 +494,7 @@ HTML = """
   <div class="card">
     <h2>Add data</h2>
     <div class="grid">
-      <form id="add-secret-form" class="stack" onsubmit="return addSecret(event)">
+      <form id="add-secret-form" class="stack">
         <h3>Add secret</h3>
         <label>Name <input id="secret-name" required placeholder="API_KEY" /></label>
         <label>Value <textarea id="secret-value" required rows="3" placeholder="secret value"></textarea></label>
@@ -298,10 +504,10 @@ HTML = """
         <label>Environment <input id="secret-environment" list="environment-options" placeholder="default" /></label>
         <div class="row">
           <button id="secret-submit-button" type="submit">Add secret</button>
-          <button id="clear-edit-button" class="secondary hidden" type="button" onclick="cancelSecretEdit()">Clear edit mode</button>
+          <button id="clear-edit-button" class="secondary hidden" type="button" data-action="cancel-secret-edit">Clear edit mode</button>
         </div>
       </form>
-      <form id="add-attachment-form" class="stack" onsubmit="return addAttachment(event)">
+      <form id="add-attachment-form" class="stack">
         <h3>Add attachment</h3>
         <label>Name <input id="attachment-name" required placeholder="SERVICE_ACCOUNT_JSON" /></label>
         <label>File <input id="attachment-file" type="file" required /></label>
@@ -315,7 +521,7 @@ HTML = """
     <div id="action-status" class="status muted">No action yet.</div>
   </div>
 
-  <div class="card" style="margin-top: 1rem;">
+  <div class="card section-card">
     <details open>
       <summary>Doctor</summary>
       <div class="section-body">
@@ -337,7 +543,7 @@ HTML = """
     </details>
   </div>
 
-  <div class="card" style="margin-top: 1rem;">
+  <div class="card section-card">
     <details open>
       <summary>Secrets</summary>
       <div class="section-body">
@@ -349,7 +555,7 @@ HTML = """
     </details>
   </div>
 
-  <div class="card" style="margin-top: 1rem;">
+  <div class="card section-card">
     <details open>
       <summary>Attachments</summary>
       <div class="section-body">
@@ -361,34 +567,42 @@ HTML = """
     </details>
   </div>
 
-  <div class="card" style="margin-top: 1rem;">
-    <details open id="passwords">
-      <summary>Passwords</summary>
-      <div class="section-body stack">
-        <div class="row">
-          <button id="password-list" class="fixed secondary" type="button" onclick="loadPasswords()">Refresh passwords</button>
-          <button id="credentials-export" class="fixed secondary" type="button" onclick="exportCredentials()">Export credentials CSV</button>
-          <form id="credentials-import-form" class="row" onsubmit="return importCredentials(event)">
-            <input id="credentials-import-file" class="fixed" type="file" accept=".csv,text/csv" required />
-            <button class="fixed secondary" type="submit">Import credentials CSV</button>
-          </form>
+    <div class="card section-card">
+      <details open id="passwords">
+        <summary>Passwords</summary>
+        <div class="section-body stack">
+          <div class="subgroup credentials-tools">
+            <div class="section-label">Credentials tools</div>
+            <div class="row">
+              <button id="password-list" class="fixed secondary" type="button" data-action="refresh-passwords">Refresh passwords</button>
+              <button id="credentials-export" class="fixed secondary" type="button" data-action="export-credentials">Export credentials CSV</button>
+              <form id="credentials-import-form" class="row">
+                <input id="credentials-import-file" class="fixed" type="file" accept=".csv,text/csv" required />
+                <button class="fixed secondary" type="submit">Import credentials CSV</button>
+              </form>
+            </div>
+          </div>
+          <div class="subgroup">
+            <div class="section-label">New password</div>
+            <form id="add-password-form" class="stack">
+              <label>Name <input id="password-name" required placeholder="GitHub" /></label>
+              <label>URL <input id="password-url" required placeholder="https://github.com" /></label>
+              <label>Username <input id="password-username" required placeholder="henry" /></label>
+              <label>Password <input id="password-value" type="password" required placeholder="password" /></label>
+              <label>Note <input id="password-note" placeholder="optional note" /></label>
+              <button type="submit">Add password</button>
+            </form>
+          </div>
+          <div class="subgroup">
+            <div class="section-label">Saved passwords</div>
+            <table>
+              <thead><tr><th>Name</th><th>URL</th><th>Username</th><th>Note</th><th>Updated</th><th>Copy</th><th>Manage</th></tr></thead>
+              <tbody id="password-rows"></tbody>
+            </table>
+          </div>
         </div>
-        <form id="add-password-form" class="stack" onsubmit="return addPassword(event)">
-          <h3>Add password</h3>
-          <label>Name <input id="password-name" required placeholder="GitHub" /></label>
-          <label>URL <input id="password-url" required placeholder="https://github.com" /></label>
-          <label>Username <input id="password-username" required placeholder="henry" /></label>
-          <label>Password <input id="password-value" type="password" required placeholder="password" /></label>
-          <label>Note <input id="password-note" placeholder="optional note" /></label>
-          <button type="submit">Add password</button>
-        </form>
-        <table>
-          <thead><tr><th>Name</th><th>URL</th><th>Username</th><th>Note</th><th>Updated</th><th>Copy</th><th>Manage</th></tr></thead>
-          <tbody id="password-rows"></tbody>
-        </table>
-      </div>
-    </details>
-  </div>
+      </details>
+    </div>
 
   <script>
     let unlocked = false;
@@ -479,6 +693,85 @@ HTML = """
       status.textContent = message;
       status.className = kind ? `status ${kind}` : 'status muted';
       showToast(message, kind);
+    }
+
+    function renderSetupResult(setup) {
+      const result = document.getElementById('setup-result');
+      const qr = document.getElementById('setup-qr');
+      const uri = document.getElementById('setup-uri');
+      const codes = document.getElementById('setup-recovery-codes');
+      if (!result || !qr || !uri || !codes) return;
+      if (!setup?.otpauth_uri && !(setup?.recovery_codes || []).length) {
+        result.classList.add('hidden');
+        return;
+      }
+      uri.textContent = setup.otpauth_uri;
+      qr.innerHTML = setup.qr_svg;
+      codes.innerHTML = setup.recovery_codes.map(code => `<li><code>${escapeHtml(code)}</code></li>`).join('');
+      result.classList.remove('hidden');
+    }
+
+    function dismissSetupResult() {
+      const result = document.getElementById('setup-result');
+      if (result) result.classList.add('hidden');
+      setStatus('Vault setup complete. Keep your recovery codes safe.', 'success');
+    }
+
+    async function refreshLandingState() {
+      const setupCard = document.getElementById('setup-card');
+      const loginCard = document.getElementById('login-card');
+      try {
+        const res = await fetch('/api/status');
+        if (!res.ok) throw new Error('status unavailable');
+        const data = await res.json();
+        if (data.initialized) {
+          setupCard?.classList.add('hidden');
+          loginCard?.classList.remove('hidden');
+          setStatus('Vault is ready. Unlock with the master password. If 2FA is enabled, include your authenticator code or a recovery code.', 'success');
+        } else {
+          setupCard?.classList.remove('hidden');
+          loginCard?.classList.add('hidden');
+          setStatus('Create a new vault to get started.');
+        }
+      } catch (error) {
+        setupCard?.classList.remove('hidden');
+        loginCard?.classList.add('hidden');
+      }
+    }
+
+    async function initVault(event) {
+      if (event) event.preventDefault();
+      const password = document.getElementById('setup-password').value;
+      const confirm = document.getElementById('setup-confirm').value;
+      if (!password || !confirm) {
+        setStatus('Enter and confirm the new master password.', 'error');
+        return false;
+      }
+      if (password !== confirm) {
+        setStatus('Passwords do not match.', 'error');
+        return false;
+      }
+      const payload = {
+        password,
+        enable_two_factor: document.getElementById('setup-enable-2fa').checked,
+        recovery_code_count: Number(document.getElementById('setup-recovery-count').value || 8),
+      };
+      const res = await fetch('/api/init', {method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+      if (!res.ok) {
+        setStatus(res.status === 409 ? 'Vault is already initialized.' : 'Vault setup failed.', 'error');
+        return false;
+      }
+      const data = await res.json();
+      csrfToken = data.csrf_token || '';
+      unlocked = true;
+      document.getElementById('setup-password').value = '';
+      document.getElementById('setup-confirm').value = '';
+      renderSetupResult(data.setup);
+      document.getElementById('setup-card')?.classList.add('hidden');
+      document.getElementById('login-card')?.classList.remove('hidden');
+      setStatus(data.setup ? 'Vault initialized. Save the recovery codes shown below.' : 'Vault initialized. You are logged in.', 'success');
+      await applyFilters();
+      return false;
     }
 
     function addKnownValues(items) {
@@ -591,10 +884,11 @@ HTML = """
     }
 
     document.addEventListener('keydown', handleKeyboardShortcuts);
+    document.addEventListener('DOMContentLoaded', refreshLandingState);
 
     async function login(event) {
       if (event) event.preventDefault();
-      const res = await fetch('/api/login', {method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({password: document.getElementById('password').value})});
+      const res = await fetch('/api/login', {method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({password: document.getElementById('password').value, totp_code: document.getElementById('totp-code').value, recovery_code: document.getElementById('recovery-code').value})});
       if (!res.ok) {
         setStatus(res.status === 429 ? 'Too many failed attempts; try again later.' : 'Unlock failed', 'error');
         return false;
@@ -603,6 +897,8 @@ HTML = """
       csrfToken = data.csrf_token || '';
       unlocked = true;
       document.getElementById('password').value = '';
+      document.getElementById('totp-code').value = '';
+      document.getElementById('recovery-code').value = '';
       setStatus('Unlocked for this browser.', 'success');
       await applyFilters();
       return false;
@@ -655,9 +951,9 @@ HTML = """
         <tr>
           <td>${escapeHtml(s.project)}</td><td>${escapeHtml(s.environment)}</td><td><code>${escapeHtml(s.name)}</code></td>
           <td>${escapeHtml((s.tags || []).join(', '))}</td><td>${escapeHtml(s.updated_at)}</td>
-          <td><button class="fixed secondary" onclick="reveal('${escapeHtml(s.name)}','${escapeHtml(s.project)}','${escapeHtml(s.environment)}')">Copy</button></td>
-          <td><button class="fixed secondary" onclick="beginSecretEdit('${escapeHtml(s.name)}','${escapeHtml(s.project)}','${escapeHtml(s.environment)}')">Edit</button></td>
-          <td><button class="fixed danger" onclick="deleteSecret('${escapeHtml(s.name)}','${escapeHtml(s.project)}','${escapeHtml(s.environment)}')">Delete</button></td>
+          <td><button class="fixed secondary" data-action="reveal-secret" data-name="${escapeHtml(s.name)}" data-project="${escapeHtml(s.project)}" data-environment="${escapeHtml(s.environment)}">Copy</button></td>
+          <td><button class="fixed secondary" data-action="edit-secret" data-name="${escapeHtml(s.name)}" data-project="${escapeHtml(s.project)}" data-environment="${escapeHtml(s.environment)}">Edit</button></td>
+          <td><button class="fixed danger" data-action="delete-secret" data-name="${escapeHtml(s.name)}" data-project="${escapeHtml(s.project)}" data-environment="${escapeHtml(s.environment)}">Delete</button></td>
         </tr>`).join('');
     }
 
@@ -667,8 +963,8 @@ HTML = """
         <tr>
           <td>${escapeHtml(a.project)}</td><td>${escapeHtml(a.environment)}</td><td><code>${escapeHtml(a.name)}</code></td>
           <td>${escapeHtml(a.filename)}</td><td>${escapeHtml(a.content_type)}</td><td>${escapeHtml(a.updated_at)}</td><td>${escapeHtml(a.size)}</td>
-          <td><button class="fixed secondary" onclick="downloadAttachment('${escapeHtml(a.name)}','${escapeHtml(a.project)}','${escapeHtml(a.environment)}','${escapeHtml(a.filename)}')">Download</button></td>
-          <td><button class="fixed danger" onclick="deleteAttachment('${escapeHtml(a.name)}','${escapeHtml(a.project)}','${escapeHtml(a.environment)}')">Delete</button></td>
+          <td><button class="fixed secondary" data-action="download-attachment" data-name="${escapeHtml(a.name)}" data-project="${escapeHtml(a.project)}" data-environment="${escapeHtml(a.environment)}" data-filename="${escapeHtml(a.filename)}">Download</button></td>
+          <td><button class="fixed danger" data-action="delete-attachment" data-name="${escapeHtml(a.name)}" data-project="${escapeHtml(a.project)}" data-environment="${escapeHtml(a.environment)}">Delete</button></td>
         </tr>`).join('');
     }
 
@@ -677,8 +973,8 @@ HTML = """
         <tr>
           <td><code>${escapeHtml(p.name)}</code></td><td>${escapeHtml(p.url)}</td><td>${escapeHtml(p.username)}</td>
           <td>${escapeHtml(p.note)}</td><td>${escapeHtml(p.updated_at)}</td>
-          <td><button class="fixed secondary" onclick="copyPassword('${escapeHtml(p.name)}','${escapeHtml(p.url)}','${escapeHtml(p.username)}')">Copy</button></td>
-          <td><button class="fixed danger" onclick="deletePassword('${escapeHtml(p.name)}','${escapeHtml(p.url)}','${escapeHtml(p.username)}')">Delete</button></td>
+          <td><button class="fixed secondary" data-action="copy-password" data-name="${escapeHtml(p.name)}" data-url="${escapeHtml(p.url)}" data-username="${escapeHtml(p.username)}">Copy</button></td>
+          <td><button class="fixed danger" data-action="delete-password" data-name="${escapeHtml(p.name)}" data-url="${escapeHtml(p.url)}" data-username="${escapeHtml(p.username)}">Delete</button></td>
         </tr>`).join('');
     }
 
@@ -905,10 +1201,64 @@ HTML = """
         </tr>`).join('');
       setStatus('Audit loaded.');
     }
+    function handleActionClick(event) {
+      const button = event.target.closest('[data-action]');
+      if (!button) return;
+      const {action, name, project, environment, filename, url, username} = button.dataset;
+      if (action === 'dismiss-setup-result') dismissSetupResult();
+      else if (action === 'clear-filters') clearFilters();
+      else if (action === 'doctor') loadDoctor();
+      else if (action === 'audit') loadAudit();
+      else if (action === 'toggle-theme') toggleTheme();
+      else if (action === 'toggle-density') toggleDensity();
+      else if (action === 'logout') logout();
+      else if (action === 'cancel-secret-edit') cancelSecretEdit();
+      else if (action === 'refresh-passwords') loadPasswords();
+      else if (action === 'export-credentials') exportCredentials();
+      else if (action === 'reveal-secret') reveal(name, project, environment);
+      else if (action === 'edit-secret') beginSecretEdit(name, project, environment);
+      else if (action === 'delete-secret') deleteSecret(name, project, environment);
+      else if (action === 'download-attachment') downloadAttachment(name, project, environment, filename);
+      else if (action === 'delete-attachment') deleteAttachment(name, project, environment);
+      else if (action === 'copy-password') copyPassword(name, url, username);
+      else if (action === 'delete-password') deletePassword(name, url, username);
+    }
+
+    document.getElementById('setup-form')?.addEventListener('submit', initVault);
+    document.getElementById('login-form')?.addEventListener('submit', login);
+    document.getElementById('filter-form')?.addEventListener('submit', applyFilters);
+    document.getElementById('add-secret-form')?.addEventListener('submit', addSecret);
+    document.getElementById('add-attachment-form')?.addEventListener('submit', addAttachment);
+    document.getElementById('credentials-import-form')?.addEventListener('submit', importCredentials);
+    document.getElementById('add-password-form')?.addEventListener('submit', addPassword);
+    document.getElementById('theme-select')?.addEventListener('change', event => setTheme(event.target.value));
+    document.addEventListener('click', handleActionClick);
   </script>
 </body>
 </html>
 """
+
+
+def _csp_hash(tag: str) -> str:
+    match = re.search(rf"<{tag}>(.*?)</{tag}>", HTML, flags=re.DOTALL)
+    if match is None:
+        raise RuntimeError(f"Missing inline {tag} block")
+    digest = hashlib.sha256(match.group(1).encode()).digest()
+    return "'sha256-" + base64.b64encode(digest).decode() + "'"
+
+
+STYLE_CSP_HASH = _csp_hash("style")
+SCRIPT_CSP_HASH = _csp_hash("script")
+
+
+def _security_csp() -> str:
+    return (
+        "default-src 'self'; "
+        f"script-src 'self' {SCRIPT_CSP_HASH}; "
+        f"style-src 'self' {STYLE_CSP_HASH}; "
+        "img-src 'self' data:; connect-src 'self'; object-src 'none'; "
+        "base-uri 'self'; frame-ancestors 'none'"
+    )
 
 
 def create_app(
@@ -917,16 +1267,25 @@ def create_app(
     max_failed_logins: int = 5,
     lockout_seconds: int = 60,
 ) -> FastAPI:
-    app = FastAPI(title="Henry Vault", version="0.2.1")
+    app = FastAPI(title="Henry Vault", version="0.3.0")
     sessions: dict[str, Session] = {}
     failed_logins: dict[str, FailedLoginState] = {}
 
-    def store_for_password(password: str) -> VaultStore:
+    @app.middleware("http")
+    async def add_security_headers(request: Request, call_next):
+        response = await call_next(request)
+        response.headers.setdefault("Content-Security-Policy", _security_csp())
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        return response
+
+    def store_for_password(password: str | None, totp_code: str | None = None, recovery_code: str | None = None) -> VaultStore:
         store = VaultStore(db_path)
         try:
-            store.unlock(password)
+            store.unlock(password, totp_code=totp_code, recovery_code=recovery_code)
         except VaultLocked as exc:
-            raise HTTPException(status_code=401, detail="Invalid master password") from exc
+            raise HTTPException(status_code=401, detail="Invalid unlock credentials") from exc
         except VaultNotInitialized as exc:
             raise HTTPException(status_code=404, detail="Vault is not initialized") from exc
         return store
@@ -966,7 +1325,12 @@ def create_app(
         if session is None or session.expires_at <= datetime.now(UTC):
             sessions.pop(token, None)
             raise HTTPException(status_code=401, detail="Invalid or expired session")
-        return store_for_password(session.password)
+        store = VaultStore(db_path)
+        try:
+            store.unlock_with_vault_key(session.vault_key)
+        except VaultLocked as exc:
+            raise HTTPException(status_code=401, detail="Invalid or expired session") from exc
+        return store
 
     def csrf_guard(hv_session: str | None, authorization: str, x_csrf_token: str) -> None:
         scheme, _, header_token = authorization.partition(" ")
@@ -984,20 +1348,85 @@ def create_app(
     def health() -> dict[str, bool]:
         return {"ok": True}
 
+    @app.get("/api/status")
+    def status() -> dict[str, bool]:
+        store = VaultStore(db_path)
+        return {"initialized": store.is_initialized()}
+
+    @app.get("/api/session/status")
+    def session_status(store: VaultStore = Depends(store_for_session)) -> dict[str, bool]:
+        return {"authenticated": True, "two_factor_enabled": store.has_two_factor_enabled()}
+
+    @app.post("/api/init")
+    def init_vault(request: Request, response: Response, init_request: VaultInitRequest) -> dict[str, object]:
+        key = client_key(request)
+        ensure_not_locked_out(key)
+        store = VaultStore(db_path)
+        if store.is_initialized():
+            raise HTTPException(status_code=409, detail="Vault is already initialized")
+        try:
+            setup = store.init(
+                init_request.password,
+                enable_two_factor=init_request.enable_two_factor,
+                recovery_code_count=init_request.recovery_code_count,
+            )
+        except VaultAlreadyExists as exc:
+            record_failed_login(key)
+            raise HTTPException(status_code=409, detail="Vault is already initialized") from exc
+        failed_logins.pop(key, None)
+        token = secrets.token_urlsafe(32)
+        csrf_token = secrets.token_urlsafe(32)
+        ttl_seconds = 15 * 60
+        sessions[token] = Session(
+            vault_key=store.current_vault_key(),
+            expires_at=datetime.now(UTC) + timedelta(seconds=ttl_seconds),
+            csrf_token=csrf_token,
+        )
+        response.set_cookie(
+            COOKIE_NAME,
+            token,
+            max_age=ttl_seconds,
+            httponly=True,
+            samesite="strict",
+            secure=False,
+        )
+        store.record_audit("web.init", status="success")
+        setup_payload = None
+        if setup.otpauth_uri or setup.recovery_codes:
+            setup_payload = {
+                "otpauth_uri": setup.otpauth_uri,
+                "qr_svg": _build_qr_svg(setup.otpauth_uri),
+                "recovery_codes": setup.recovery_codes,
+            }
+        return {"token": token, "csrf_token": csrf_token, "expires_in": ttl_seconds, "setup": setup_payload}
+
     @app.post("/api/login")
     def login(request: Request, response: Response, login_request: LoginRequest) -> dict[str, str | int]:
         key = client_key(request)
         ensure_not_locked_out(key)
         try:
-            store = store_for_password(login_request.password)
-        except HTTPException:
+            store = store_for_password(
+                login_request.password,
+                totp_code=login_request.totp_code,
+                recovery_code=login_request.recovery_code,
+            )
+        except HTTPException as exc:
             record_failed_login(key)
+            if exc.status_code == 401:
+                try:
+                    VaultStore(db_path).record_audit("web.login", status="failed", message="invalid unlock credentials")
+                except VaultNotInitialized:
+                    pass
             raise
         failed_logins.pop(key, None)
         token = secrets.token_urlsafe(32)
         csrf_token = secrets.token_urlsafe(32)
         ttl_seconds = 15 * 60
-        sessions[token] = Session(password=login_request.password, expires_at=datetime.now(UTC) + timedelta(seconds=ttl_seconds), csrf_token=csrf_token)
+        sessions[token] = Session(
+            vault_key=store.current_vault_key(),
+            expires_at=datetime.now(UTC) + timedelta(seconds=ttl_seconds),
+            csrf_token=csrf_token,
+        )
         response.set_cookie(
             COOKIE_NAME,
             token,

@@ -1,9 +1,25 @@
+import base64
+import hashlib
+import hmac
 import os
+import struct
+import time
 
 import pytest
 
 from henry_vault.errors import VaultAlreadyExists, VaultLocked
 from henry_vault.store import AttachmentInput, SecretInput, VaultStore
+
+
+def _current_totp(secret: str, timestamp: int | None = None) -> str:
+    timestamp = int(time.time()) if timestamp is None else timestamp
+    counter = timestamp // 30
+    padded_secret = secret + "=" * ((8 - len(secret) % 8) % 8)
+    key = base64.b32decode(padded_secret, casefold=True)
+    digest = hmac.new(key, struct.pack(">Q", counter), hashlib.sha1).digest()
+    offset = digest[-1] & 0x0F
+    code = struct.unpack(">I", digest[offset:offset + 4])[0] & 0x7FFFFFFF
+    return f"{code % 1_000_000:06d}"
 
 
 def test_init_add_get_list_delete_secret_round_trip(tmp_path):
@@ -51,6 +67,138 @@ def test_wrong_password_cannot_decrypt_existing_secret(tmp_path):
     attacker = VaultStore(db_path)
     with pytest.raises(VaultLocked):
         attacker.unlock("bad-password")
+
+
+def test_two_factor_init_supports_totp_and_recovery_codes(tmp_path):
+    db_path = tmp_path / "vault.db"
+    store = VaultStore(db_path)
+
+    setup = store.init("good-password", enable_two_factor=True, recovery_code_count=2)
+
+    assert setup.totp_secret
+    assert len(setup.recovery_codes) == 2
+
+    locked = VaultStore(db_path)
+    with pytest.raises(VaultLocked):
+        locked.unlock("good-password")
+
+    code = _current_totp(setup.totp_secret)
+    locked.unlock("good-password", totp_code=code)
+    locked.add_secret(SecretInput(name="TOKEN", value="super-secret"))
+    assert locked.get_secret("TOKEN").value == "super-secret"
+
+    recovery = VaultStore(db_path)
+    recovery.unlock(recovery_code=setup.recovery_codes[0])
+    assert recovery.get_secret("TOKEN").value == "super-secret"
+
+    second_recovery = VaultStore(db_path)
+    with pytest.raises(VaultLocked):
+        second_recovery.unlock(recovery_code=setup.recovery_codes[0])
+
+
+def test_two_factor_recovery_code_is_emergency_unlock_without_password(tmp_path):
+    db_path = tmp_path / "vault.db"
+    store = VaultStore(db_path)
+    setup = store.init("good-password", enable_two_factor=True, recovery_code_count=2)
+    store.add_secret(SecretInput(name="TOKEN", value="super-secret"))
+
+    recovered = VaultStore(db_path)
+    recovered.unlock(recovery_code=setup.recovery_codes[0])
+
+    assert recovered.get_secret("TOKEN").value == "super-secret"
+
+
+def test_two_factor_recovery_code_is_one_time_only(tmp_path):
+    db_path = tmp_path / "vault.db"
+    store = VaultStore(db_path)
+    setup = store.init("good-password", enable_two_factor=True, recovery_code_count=1)
+
+    first = VaultStore(db_path)
+    first.unlock(recovery_code=setup.recovery_codes[0])
+
+    second = VaultStore(db_path)
+    with pytest.raises(VaultLocked):
+        second.unlock(recovery_code=setup.recovery_codes[0])
+
+
+def test_two_factor_rejects_missing_and_invalid_totp(tmp_path):
+    db_path = tmp_path / "vault.db"
+    store = VaultStore(db_path)
+    setup = store.init("good-password", enable_two_factor=True, recovery_code_count=1)
+
+    missing = VaultStore(db_path)
+    with pytest.raises(VaultLocked):
+        missing.unlock("good-password")
+
+    invalid = VaultStore(db_path)
+    with pytest.raises(VaultLocked):
+        invalid.unlock("good-password", totp_code="000000")
+
+    valid = VaultStore(db_path)
+    valid.unlock("good-password", totp_code=_current_totp(setup.totp_secret))
+    assert valid.is_unlocked is True
+
+
+def test_two_factor_recovery_code_count_is_bounded(tmp_path):
+    for count in (0, 21):
+        store = VaultStore(tmp_path / f"vault-{count}.db")
+        with pytest.raises(ValueError):
+            store.init("good-password", enable_two_factor=True, recovery_code_count=count)
+
+
+def test_enable_two_factor_on_existing_vault_and_regenerate_recovery_codes(tmp_path):
+    db_path = tmp_path / "vault.db"
+    store = VaultStore(db_path)
+    store.init("good-password")
+    store.add_secret(SecretInput(name="TOKEN", value="super-secret"))
+
+    setup = store.enable_two_factor("good-password", recovery_code_count=2)
+
+    assert setup.totp_secret
+    assert len(setup.recovery_codes) == 2
+    assert store.has_two_factor_enabled() is True
+
+    locked = VaultStore(db_path)
+    with pytest.raises(VaultLocked):
+        locked.unlock("good-password")
+
+    locked.unlock("good-password", totp_code=_current_totp(setup.totp_secret))
+    assert locked.get_secret("TOKEN").value == "super-secret"
+
+    new_codes = locked.regenerate_recovery_codes(recovery_code_count=2)
+    assert len(new_codes) == 2
+
+    old_recovery = VaultStore(db_path)
+    with pytest.raises(VaultLocked):
+        old_recovery.unlock(recovery_code=setup.recovery_codes[0])
+
+    new_recovery = VaultStore(db_path)
+    new_recovery.unlock(recovery_code=new_codes[0])
+    assert new_recovery.get_secret("TOKEN").value == "super-secret"
+
+
+def test_rotate_and_disable_two_factor_on_existing_vault(tmp_path):
+    db_path = tmp_path / "vault.db"
+    store = VaultStore(db_path)
+    store.init("good-password")
+    setup = store.enable_two_factor("good-password", recovery_code_count=1)
+
+    rotated = store.rotate_totp_secret()
+
+    assert rotated.totp_secret
+    assert rotated.totp_secret != setup.totp_secret
+    old_totp = VaultStore(db_path)
+    with pytest.raises(VaultLocked):
+        old_totp.unlock("good-password", totp_code=_current_totp(setup.totp_secret))
+    new_totp = VaultStore(db_path)
+    new_totp.unlock("good-password", totp_code=_current_totp(rotated.totp_secret))
+
+    new_totp.disable_two_factor("good-password")
+
+    assert new_totp.has_two_factor_enabled() is False
+    password_only = VaultStore(db_path)
+    password_only.unlock("good-password")
+    assert password_only.is_unlocked is True
 
 
 def test_export_env_returns_shell_safe_lines(tmp_path):

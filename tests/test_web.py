@@ -1,5 +1,11 @@
 from fastapi.testclient import TestClient
 
+import base64
+import hashlib
+import hmac
+import struct
+import time
+
 from henry_vault.store import PasswordInput, SecretInput, VaultStore
 from henry_vault.web import create_app
 
@@ -35,6 +41,46 @@ def test_web_health_list_and_reveal(tmp_path):
 
     denied = client.get("/api/secrets", headers={"Authorization": "Bearer wrong"})
     assert denied.status_code == 401
+
+
+def _current_totp(secret: str) -> str:
+    normalized = secret.strip().upper()
+    normalized += "=" * ((8 - len(normalized) % 8) % 8)
+    key = base64.b32decode(normalized, casefold=True)
+    counter = int(time.time()) // 30
+    digest = hmac.new(key, struct.pack(">Q", counter), hashlib.sha1).digest()
+    offset = digest[-1] & 0x0F
+    value = struct.unpack(">I", digest[offset:offset + 4])[0] & 0x7FFFFFFF
+    return f"{value % 1_000_000:06d}"
+
+
+def test_web_login_supports_totp_and_recovery_codes(tmp_path):
+    db_path = tmp_path / "vault.db"
+    store = VaultStore(db_path)
+    setup = store.init("pw", enable_two_factor=True, recovery_code_count=2)
+
+    store.unlock("pw", totp_code=_current_totp(setup.totp_secret))
+    store.add_secret(SecretInput(name="TOKEN", value="secret", project="demo", environment="dev"))
+
+    client = TestClient(create_app(db_path))
+
+    login = client.post("/api/login", json={"password": "pw", "totp_code": _current_totp(setup.totp_secret)})
+    assert login.status_code == 200
+    token = login.json()["token"]
+    listed = client.get("/api/secrets", params={"project": "demo", "environment": "dev"}, headers={"Authorization": f"Bearer {token}"})
+    assert listed.status_code == 200
+    assert listed.json()[0]["name"] == "TOKEN"
+
+    recovery_login = client.post("/api/login", json={"recovery_code": setup.recovery_codes[0]})
+    assert recovery_login.status_code == 200
+    recovery_token = recovery_login.json()["token"]
+    recovery_listed = client.get("/api/secrets", params={"project": "demo", "environment": "dev"}, headers={"Authorization": f"Bearer {recovery_token}"})
+    assert recovery_listed.status_code == 200
+    assert recovery_listed.json()[0]["name"] == "TOKEN"
+
+    reused = client.post("/api/login", json={"recovery_code": setup.recovery_codes[0]})
+    assert reused.status_code == 401
+
 
 
 def test_web_login_sets_httponly_cookie_and_cookie_auth_works(tmp_path):
@@ -98,7 +144,7 @@ def test_web_login_rate_limits_failed_attempts(tmp_path):
     assert locked.status_code == 429
 
 
-def test_web_login_rejects_wrong_password(tmp_path):
+def test_web_login_rejects_wrong_password_with_generic_error_and_audit(tmp_path):
     db_path = tmp_path / "vault.db"
     store = VaultStore(db_path)
     store.init("pw")
@@ -106,7 +152,12 @@ def test_web_login_rejects_wrong_password(tmp_path):
     client = TestClient(create_app(db_path))
 
     denied = client.post("/api/login", json={"password": "***"})
+
     assert denied.status_code == 401
+    assert denied.json()["detail"] == "Invalid unlock credentials"
+    events = VaultStore(db_path).list_audit_events(action="web.login", limit=5)
+    assert events[0].status == "failed"
+    assert events[0].message == "invalid unlock credentials"
 
 
 def test_web_doctor_endpoint_reports_sanitized_issues(tmp_path):
@@ -148,6 +199,43 @@ def test_web_audit_endpoint_lists_sanitized_events(tmp_path):
     assert "secret-value" not in response.text
 
 
+def test_web_responses_include_security_headers(tmp_path):
+    db_path = tmp_path / "vault.db"
+    store = VaultStore(db_path)
+    store.init("pw")
+
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    csp = response.headers["content-security-policy"]
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["referrer-policy"] == "no-referrer"
+    assert response.headers["x-frame-options"] == "DENY"
+    assert "default-src 'self'" in csp
+    assert "'unsafe-inline'" not in csp
+    assert "script-src 'self' 'sha256-" in csp
+    assert "style-src 'self' 'sha256-" in csp
+
+
+def test_web_index_avoids_inline_event_handlers_and_styles(tmp_path):
+    db_path = tmp_path / "vault.db"
+    store = VaultStore(db_path)
+    store.init("pw")
+
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert " onclick=" not in response.text
+    assert " onsubmit=" not in response.text
+    assert " onchange=" not in response.text
+    assert " style=" not in response.text
+    assert "data-action=" in response.text
+
+
 def test_web_index_includes_doctor_and_audit_controls(tmp_path):
     db_path = tmp_path / "vault.db"
     store = VaultStore(db_path)
@@ -165,6 +253,83 @@ def test_web_index_includes_doctor_and_audit_controls(tmp_path):
     assert 'id="audit-events"' in response.text
     assert 'id="doctor"' not in response.text
     assert 'id="audit"' not in response.text
+
+
+def test_web_init_flow_exposes_setup_qr_and_recovery_codes(tmp_path):
+    db_path = tmp_path / "vault.db"
+    client = TestClient(create_app(db_path))
+
+    status = client.get("/api/status")
+    assert status.status_code == 200
+    assert status.json()["initialized"] is False
+
+    index = client.get("/")
+    assert index.status_code == 200
+    assert "Create a new vault" in index.text
+    assert "scan the QR code in your authenticator app" in index.text
+    assert "Recovery codes are shown once" in index.text
+    assert 'id="setup-qr"' in index.text
+
+    created = client.post(
+        "/api/init",
+        json={"password": "pw", "enable_two_factor": True, "recovery_code_count": 3},
+    )
+    assert created.status_code == 200
+    payload = created.json()
+    assert payload["token"]
+    assert payload["csrf_token"]
+    assert payload["setup"]["otpauth_uri"].startswith("otpauth://totp/")
+    assert payload["setup"]["qr_svg"].startswith("<svg")
+    assert len(payload["setup"]["recovery_codes"]) == 3
+
+    initialized = client.get("/api/status")
+    assert initialized.status_code == 200
+    assert initialized.json()["initialized"] is True
+    assert "two_factor_enabled" not in initialized.json()
+
+    second_init = client.post(
+        "/api/init",
+        json={"password": "***", "enable_two_factor": False},
+    )
+    assert second_init.status_code == 409
+
+
+def test_web_status_does_not_disclose_two_factor_state_before_login(tmp_path):
+    db_path = tmp_path / "vault.db"
+    setup = VaultStore(db_path).init("***", enable_two_factor=True)
+    client = TestClient(create_app(db_path))
+
+    public_status = client.get("/api/status")
+    assert public_status.status_code == 200
+    assert public_status.json() == {"initialized": True}
+
+    login = client.post("/api/login", json={"password": "***", "totp_code": _current_totp(setup.totp_secret)})
+    token = login.json()["token"]
+    private_status = client.get("/api/session/status", headers={"Authorization": f"Bearer {token}"})
+    assert private_status.status_code == 200
+    assert private_status.json()["two_factor_enabled"] is True
+
+
+def test_web_init_without_two_factor_does_not_return_empty_recovery_panel_data(tmp_path):
+    db_path = tmp_path / "vault.db"
+    client = TestClient(create_app(db_path))
+
+    created = client.post("/api/init", json={"password": "***", "enable_two_factor": False})
+
+    assert created.status_code == 200
+    assert created.json()["setup"] is None
+
+
+def test_web_init_recovery_code_count_is_bounded(tmp_path):
+    db_path = tmp_path / "vault.db"
+    client = TestClient(create_app(db_path))
+
+    too_many = client.post(
+        "/api/init",
+        json={"password": "***", "enable_two_factor": True, "recovery_code_count": 21},
+    )
+
+    assert too_many.status_code == 422
 
 
 def test_web_can_download_attachment_via_api(tmp_path):
@@ -285,6 +450,23 @@ def test_web_index_includes_edit_search_and_attachment_controls(tmp_path):
     assert 'Sunset Amber' in response.text
     assert 'id="topbar"' in response.text
     assert 'position: sticky' in response.text
+    assert 'class="hero-title"' in response.text
+    assert 'class="muted hero-subtitle"' in response.text
+    assert '.topbar .card {' in response.text
+    assert '.topbar .shortcuts {' in response.text
+    assert '.topbar .top-group +' in response.text
+    assert '.section-label {' in response.text
+    assert '.topbar .split-row:first-of-type' in response.text
+    assert '.topbar .split-row:last-of-type' in response.text
+    assert 'Search and actions' in response.text
+    assert '#passwords .row {' in response.text
+    assert '#passwords .subgroup + .subgroup {' in response.text
+    assert '#passwords .credentials-tools .row {' in response.text
+    assert 'class="section-label"' in response.text
+    assert 'Credentials tools' in response.text
+    assert 'New password' in response.text
+    assert 'Saved passwords' in response.text
+    assert '#add-password-form {' in response.text
     assert 'Shortcuts:' in response.text
     assert '<kbd>/</kbd> focus search' in response.text
     assert '<kbd>g</kbd>' in response.text
@@ -306,6 +488,8 @@ def test_web_index_includes_edit_search_and_attachment_controls(tmp_path):
     assert '<details open>' in response.text
     assert 'role="status"' in response.text
     assert 'id="toast"' in response.text
+    assert 'background: var(--panel-bg)' in response.text
+    assert 'margin: 2rem auto' in response.text
     assert '/api/secrets' in response.text
     assert '/api/attachments' in response.text
 

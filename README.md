@@ -5,7 +5,7 @@ Henry Vault is a local-first encrypted secrets manager with both a CLI and a web
 Install from the latest release:
 
 ```bash
-pipx install 'git+https://github.com/HenryeArgueta/henry-vault.git@v0.2.1'
+pipx install 'git+https://github.com/HenryeArgueta/henry-vault.git@v0.3.0'
 ```
 
 Or install from the latest branch tip:
@@ -15,7 +15,7 @@ pipx install 'git+https://github.com/HenryeArgueta/henry-vault.git'
 ```
 
 It stores secrets in an encrypted SQLite database at `~/.henry-vault/vault.db` by default.
-Secret values are encrypted at rest with Fernet. The vault encryption key is derived from your master password with Argon2id and a per-vault random salt.
+Secret values and attachment contents are encrypted at rest with Fernet. New vaults use a random vault encryption key that is wrapped by credentials derived from your master password and, if enabled, one-time recovery codes. Older vaults that have not been migrated may still derive the data-encryption key directly from the master password.
 
 ## Get started
 
@@ -34,7 +34,11 @@ hv get API_KEY --project demo --env dev
 hv web --host 127.0.0.1 --port 8787
 ```
 
-Open `http://127.0.0.1:8787` and log in with your master password.
+Open `http://127.0.0.1:8787`.
+
+If the vault already exists, log in with your master password. If TOTP 2FA is enabled, enter the current authenticator code too. If you ever need emergency recovery, use one of the one-time recovery codes.
+
+If this is a brand-new vault, the web UI shows a first-run setup screen that walks you through creating the master password, scanning the authenticator QR code, and saving the recovery codes. Save the recovery codes immediately; they are shown only once.
 
 If you are on another computer, keep the server bound to `127.0.0.1` and use an SSH tunnel.
 
@@ -56,6 +60,7 @@ From there, you can explore profiles, attachments, passwords, backups, and CSV i
 - Prune old Henry Vault backup bundles safely with dry-run by default.
 - Scan repos for likely leaked secrets and known vault secret values.
 - Start a local FastAPI web UI/API with short-lived HttpOnly browser sessions and bearer-token API compatibility.
+- Enable, rotate, regenerate, or disable authenticator-app 2FA and recovery codes from the CLI.
 - View doctor issues and sanitized audit events from the web UI/API.
 - Record audit events for unlocks, adds, gets, lists, scans, web logins, and web reveals.
 - Track rotation metadata: expiry date and rotation URL/instructions.
@@ -97,14 +102,33 @@ hv --db /tmp/henry-vault-demo.db get OPENAI_API_KEY --project demo --env dev
 hv --db /tmp/henry-vault-demo.db export-env --project demo --env dev
 ```
 
+To initialize from the CLI with authenticator-app 2FA and one-time recovery codes:
+
+```bash
+hv init --with-2fa --recovery-codes 8
+```
+
+Save the printed provisioning URI and recovery codes immediately. For future CLI unlocks, enter the TOTP code when prompted, or pass it non-interactively with `--totp-code` / `HENRY_VAULT_TOTP_CODE`. Recovery codes are emergency unlock credentials; each code can be used once with `--recovery-code` / `HENRY_VAULT_RECOVERY_CODE`.
+
+For an existing vault, use the 2FA lifecycle commands:
+
+```bash
+hv two-factor-enable --recovery-codes 8
+hv recovery-codes-regenerate --recovery-codes 8
+hv totp-rotate
+hv two-factor-disable
+```
+
+Regenerating recovery codes invalidates old unused codes. Rotating TOTP prints a new provisioning URI; scan it in your authenticator app before relying on the new code. Disabling 2FA invalidates all recovery codes.
+
 When you're ready for a real project vault, the common workflow looks like this:
 
 ```bash
 export HENRY_VAULT_PASSWORD='***'
 
 hv init
-hv add OPENAI_API_KEY 'sk-your-key' --project discord-bot --env prod --tag ai
-hv rotate OPENAI_API_KEY 'sk-new-key' --project discord-bot --env prod --expires-at 2027-05-01 --rotation-url 'https://platform.example/keys'
+hv add OPENAI_API_KEY 'your-secret-value' --project discord-bot --env prod --tag ai
+hv rotate OPENAI_API_KEY 'your-new-secret-value' --project discord-bot --env prod --expires-at 2027-05-01 --rotation-url 'https://platform.example/keys'
 hv profile-set --project discord-bot --env prod --required OPENAI_API_KEY --required DISCORD_TOKEN
 hv list --project discord-bot --env prod
 hv list --project discord-bot --env prod --query api --tag ai
@@ -344,9 +368,17 @@ Then open:
 http://127.0.0.1:8787
 ```
 
-The web UI unlocks via `/api/login`, stores the browser session in a short-lived HttpOnly `hv_session` cookie, and supports `/api/logout`. Login also returns a per-session CSRF token; the browser sends it as `X-CSRF-Token` for cookie-authenticated unsafe requests. API clients can still use the returned bearer token in the `Authorization` header. Repeated failed login attempts are rate-limited in memory.
+The web UI unlocks via `/api/login`, stores the browser session in a short-lived HttpOnly `hv_session` cookie, and supports `/api/logout`. Login accepts the master password plus optional TOTP or recovery code factors. Login also returns a per-session CSRF token; the browser sends it as `X-CSRF-Token` for cookie-authenticated unsafe requests. API clients can still use the returned bearer token in the `Authorization` header. Repeated failed login attempts are rate-limited in memory.
 
 The dashboard includes buttons for listing secret metadata, running doctor checks, viewing sanitized audit events, and managing passwords. The Passwords section also supports CSV export/import from the browser.
+
+First-run onboarding flow:
+
+1. Open the web UI.
+2. Create the vault master password.
+3. Scan the QR code with your authenticator app.
+4. Save the one-time recovery codes immediately.
+5. Use the login screen for future unlocks with your master password plus TOTP, or a recovery code if needed.
 
 Important: keep this local-only by default. Do not expose it to the public internet without TLS, stronger rate limiting, and network controls such as Tailscale, WireGuard, or Cloudflare Access.
 
@@ -357,17 +389,18 @@ curl http://127.0.0.1:8787/api/health
 
 LOGIN_JSON=$(curl -s -X POST http://127.0.0.1:8787/api/login \
   -H 'Content-Type: application/json' \
-  -d '{"password": "your-master-password"}')
-TOKEN=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])' <<< "$LOGIN_JSON")
-CSRF_TOKEN=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["csrf_token"])' <<< "$LOGIN_JSON")
+  -d '{"password": "your-master-password", "totp_code": "123456"}')
 
-curl "http://127.0.0.1:8787/api/secrets?project=discord-bot&environment=prod" \
+TOKEN=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["token"])' "$LOGIN_JSON")
+CSRF_TOKEN=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["csrf_token"])' "$LOGIN_JSON")
+
+curl "http://127.0.0.1:8787/api/secrets?project=demo&environment=dev" \
   -H "Authorization: Bearer $TOKEN"
 
-curl "http://127.0.0.1:8787/api/secrets/reveal?name=OPENAI_API_KEY&project=discord-bot&environment=prod" \
+curl "http://127.0.0.1:8787/api/secrets/reveal?name=API_KEY&project=demo&environment=dev" \
   -H "Authorization: Bearer $TOKEN"
 
-curl "http://127.0.0.1:8787/api/doctor?project=discord-bot&environment=prod" \
+curl "http://127.0.0.1:8787/api/doctor?project=demo&environment=dev" \
   -H "Authorization: Bearer $TOKEN"
 
 curl "http://127.0.0.1:8787/api/audit?limit=25" \
@@ -377,7 +410,7 @@ curl -X POST http://127.0.0.1:8787/api/logout \
   -H "Authorization: Bearer $TOKEN"
 ```
 
-Cookie-authenticated browser requests use `X-CSRF-Token`; bearer-token API requests do not need the CSRF header.
+If you enabled TOTP 2FA and need emergency access, use one of your one-time recovery codes as the `recovery_code` field when logging in. Cookie-authenticated browser requests use `X-CSRF-Token`; bearer-token API requests do not need the CSRF header.
 
 ## Install/update with pipx or a GitHub release
 
@@ -391,7 +424,7 @@ pipx upgrade henry-vault
 From GitHub, use the published tag for a stable install:
 
 ```bash
-pipx install 'git+https://github.com/HenryeArgueta/henry-vault.git@v0.2.1'
+pipx install 'git+https://github.com/HenryeArgueta/henry-vault.git@v0.3.0'
 ```
 
 You can also install from the latest branch tip:
@@ -409,27 +442,59 @@ Tagged releases are built by `.github/workflows/release.yml`. Push a tag like `v
 .venv/bin/pytest
 ```
 
-## Current security notes
+## Security model
 
-This is a useful local-first vault, not a hardened team vault yet.
+Henry Vault is designed as a local-first personal vault. It is useful for a single-user workstation or a private server you control, but it is not a hardened multi-user/team vault.
 
-Good defaults already included:
+What is encrypted:
 
-- encrypted secret values and attachment contents at rest
-- Argon2id key derivation
-- per-vault salt
-- database file chmod `0600`
+- secret values
+- password entries
+- attachment contents
+- encrypted backup bundle contents
+- TOTP setup secret when authenticator-app 2FA is enabled
+- recovery-code key material used for emergency unlock
+
+What is intentionally not encrypted:
+
+- secret names, projects, environments, tags, notes, timestamps, expiry dates, and rotation URLs
+- attachment names, filenames, content types, sizes, and notes
+- password entry names, URLs, usernames, notes, and timestamps
+- sanitized audit log metadata
+
+Unlock model:
+
+- The master password is the primary vault secret.
+- The vault encryption key is wrapped with a key derived from the master password using Argon2id and a per-vault random salt.
+- Without 2FA, normal unlock requires the master password.
+- With TOTP 2FA enabled, normal unlock requires the master password plus a current RFC 6238 authenticator code.
+- TOTP protects normal unlock attempts, but it does not encrypt the vault data by itself.
+- One-time recovery codes are emergency unlock credentials. A valid unused recovery code can unlock the vault by itself, without the master password, so store them with the same care you would give an emergency vault key.
+- Each recovery code can be used once and is shown only once during setup.
+- If you forget the master password and do not have an unused recovery code, there is no reset path for that vault. Restore from an encrypted backup or CSV export if you have one, then create a new vault password.
+
+Local web security defaults:
+
 - web server defaults to `127.0.0.1`
+- browser sessions use short-lived HttpOnly cookies
+- bearer-token API compatibility is available for scripts
+- cookie-authenticated unsafe requests require a per-session CSRF token
+- repeated failed login attempts are rate-limited in memory
+- login failure responses are intentionally generic
+- unauthenticated `/api/status` only reports whether a vault exists; 2FA state is available after login via `/api/session/status`
+- security headers include a hash-based Content Security Policy, `X-Content-Type-Options`, `Referrer-Policy`, and clickjacking protection
+- the web UI avoids sending the master password on every reveal/list call after login
+
+Operational safety defaults:
+
+- database file chmod `0600`
 - list operations hide secret values
 - scanner output masks secrets
 - backup bundles encrypt plaintext values and attachment contents
-- web UI uses short-lived HttpOnly browser sessions plus bearer-token API compatibility
-- web UI requires per-session CSRF tokens for cookie-authenticated unsafe requests
-- web login has in-memory failed-attempt lockout
-- web UI avoids sending the master password on every reveal/list call after login
-- if you forget the master password, there is no recovery path for that vault; restore from a backup or CSV export if you have one, then create a new vault password
 - audit log avoids storing secret values
 - doctor reports operational hygiene issues
+
+Important: keep the web UI local-only by default. Do not expose it to the public internet without TLS, stronger rate limiting, and network controls such as Tailscale, WireGuard, or Cloudflare Access.
 
 Future hardening ideas:
 

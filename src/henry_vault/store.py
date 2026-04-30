@@ -2,13 +2,18 @@ from __future__ import annotations
 
 import base64
 import csv
+import hashlib
+import hmac
 import json
 import os
+import secrets
 import sqlite3
-from dataclasses import dataclass
+import struct
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Iterable
+from urllib.parse import quote
 
 from argon2.low_level import Type, hash_secret_raw
 from cryptography.fernet import Fernet, InvalidToken
@@ -110,6 +115,13 @@ class CredentialTransferSummary:
 
 
 @dataclass(frozen=True)
+class VaultInitSetup:
+    totp_secret: str | None = None
+    otpauth_uri: str | None = None
+    recovery_codes: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
 class AuditEvent:
     id: int
     action: str
@@ -134,41 +146,172 @@ class VaultStore:
     def __init__(self, db_path: str | Path = DEFAULT_DB_PATH):
         self.db_path = Path(db_path).expanduser()
         self._fernet: Fernet | None = None
+        self._vault_key: bytes | None = None
 
     @property
     def is_unlocked(self) -> bool:
         return self._fernet is not None
 
-    def init(self, password: str) -> None:
+    def init(
+        self,
+        password: str,
+        *,
+        enable_two_factor: bool = False,
+        recovery_code_count: int = 8,
+    ) -> VaultInitSetup:
+        if enable_two_factor and not 1 <= recovery_code_count <= 20:
+            raise ValueError("recovery_code_count must be between 1 and 20")
         if self.db_path.exists():
             with self._connect() as conn:
                 if self._has_schema(conn):
                     raise VaultAlreadyExists(f"Vault already exists at {self.db_path}")
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         salt = os.urandom(16)
-        verifier_plaintext = b"henry-vault-verifier-v1"
-        fernet = Fernet(self._derive_key(password, salt))
-        verifier = fernet.encrypt(verifier_plaintext).decode()
+        now = self._now()
+        vault_key = Fernet.generate_key()
+        master_wrap = Fernet(self._derive_key(password, salt)).encrypt(vault_key).decode()
+        setup = VaultInitSetup()
         with self._connect() as conn:
             self._create_schema(conn)
             conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)", ("kdf_salt", base64.b64encode(salt).decode()))
-            conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)", ("verifier", verifier))
+            conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)", ("encryption_scheme", "v2"))
+            conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)", ("master_wrap", master_wrap))
+            if enable_two_factor:
+                totp_secret = self._generate_totp_secret()
+                setup = VaultInitSetup(
+                    totp_secret=totp_secret,
+                    otpauth_uri=self._build_otpauth_uri(totp_secret),
+                    recovery_codes=[],
+                )
+                conn.execute(
+                    "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
+                    ("totp_secret", Fernet(vault_key).encrypt(totp_secret.encode()).decode()),
+                )
+                recovery_codes = self._store_recovery_codes(conn, vault_key, recovery_code_count, now)
+                setup = VaultInitSetup(totp_secret=totp_secret, otpauth_uri=self._build_otpauth_uri(totp_secret), recovery_codes=recovery_codes)
         os.chmod(self.db_path, 0o600)
+        self._fernet = Fernet(vault_key)
+        self._vault_key = vault_key
+        return setup
 
-    def unlock(self, password: str) -> None:
+    def unlock(self, password: str | None = None, *, totp_code: str | None = None, recovery_code: str | None = None) -> None:
         self._ensure_initialized()
         with self._connect() as conn:
             self._migrate_schema(conn)
+            scheme = self._meta(conn, "encryption_scheme") if self._has_meta_key(conn, "encryption_scheme") else "v1"
+            if recovery_code:
+                if scheme != "v2":
+                    raise VaultLocked("Recovery codes are not available for this vault")
+                normalized_code = self._normalize_recovery_code(recovery_code)
+                code_hash = hashlib.sha256(normalized_code.encode()).hexdigest()
+                row = conn.execute(
+                    """
+                    SELECT id, salt, wrapped_vault_key
+                    FROM recovery_codes
+                    WHERE code_hash=? AND used_at IS NULL
+                    """,
+                    (code_hash,),
+                ).fetchone()
+                if row is None:
+                    raise VaultLocked("Invalid recovery code")
+                try:
+                    vault_key = Fernet(self._derive_key(normalized_code, base64.b64decode(str(row["salt"])))).decrypt(str(row["wrapped_vault_key"]).encode())
+                except InvalidToken as exc:
+                    raise VaultLocked("Invalid recovery code") from exc
+                cur = conn.execute("UPDATE recovery_codes SET used_at=? WHERE id=? AND used_at IS NULL", (self._now(), int(row["id"])))
+                if cur.rowcount != 1:
+                    raise VaultLocked("Invalid recovery code")
+                self._fernet = Fernet(vault_key)
+                self._vault_key = vault_key
+                return
+            if password is None:
+                raise VaultLocked("Missing master password")
+            if scheme == "v1":
+                salt_b64 = self._meta(conn, "kdf_salt")
+                verifier = self._meta(conn, "verifier")
+                salt = base64.b64decode(salt_b64)
+                fernet = Fernet(self._derive_key(password, salt))
+                try:
+                    if fernet.decrypt(verifier.encode()) != b"henry-vault-verifier-v1":
+                        raise VaultLocked("Wrong master password")
+                except InvalidToken as exc:
+                    raise VaultLocked("Wrong master password") from exc
+                self._fernet = fernet
+                self._vault_key = self._derive_key(password, salt)
+                return
             salt_b64 = self._meta(conn, "kdf_salt")
-            verifier = self._meta(conn, "verifier")
-        salt = base64.b64decode(salt_b64)
-        fernet = Fernet(self._derive_key(password, salt))
-        try:
-            if fernet.decrypt(verifier.encode()) != b"henry-vault-verifier-v1":
-                raise VaultLocked("Wrong master password")
-        except InvalidToken as exc:
-            raise VaultLocked("Wrong master password") from exc
-        self._fernet = fernet
+            master_wrap = self._meta(conn, "master_wrap")
+            salt = base64.b64decode(salt_b64)
+            try:
+                vault_key = Fernet(self._derive_key(password, salt)).decrypt(master_wrap.encode())
+            except InvalidToken as exc:
+                raise VaultLocked("Wrong master password") from exc
+            data_fernet = Fernet(vault_key)
+            if self._has_meta_key(conn, "totp_secret"):
+                if not totp_code:
+                    raise VaultLocked("Missing TOTP code")
+                secret = data_fernet.decrypt(self._meta(conn, "totp_secret").encode()).decode()
+                if not self._verify_totp(secret, totp_code):
+                    raise VaultLocked("Invalid TOTP code")
+            self._fernet = data_fernet
+            self._vault_key = vault_key
+
+    def enable_two_factor(self, password: str, *, recovery_code_count: int = 8) -> VaultInitSetup:
+        vault_key = self.current_vault_key()
+        if not 1 <= recovery_code_count <= 20:
+            raise ValueError("recovery_code_count must be between 1 and 20")
+        with self._connect() as conn:
+            self._migrate_schema(conn)
+            if self._has_meta_key(conn, "totp_secret"):
+                raise ValueError("Two-factor unlock is already enabled")
+            salt = base64.b64decode(self._meta(conn, "kdf_salt"))
+            self._verify_master_password_for_update(conn, password, salt, vault_key)
+            totp_secret = self._generate_totp_secret()
+            conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)", ("encryption_scheme", "v2"))
+            conn.execute(
+                "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
+                ("master_wrap", Fernet(self._derive_key(password, salt)).encrypt(vault_key).decode()),
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
+                ("totp_secret", Fernet(vault_key).encrypt(totp_secret.encode()).decode()),
+            )
+            conn.execute("DELETE FROM recovery_codes")
+            recovery_codes = self._store_recovery_codes(conn, vault_key, recovery_code_count, self._now())
+        return VaultInitSetup(totp_secret=totp_secret, otpauth_uri=self._build_otpauth_uri(totp_secret), recovery_codes=recovery_codes)
+
+    def regenerate_recovery_codes(self, *, recovery_code_count: int = 8) -> list[str]:
+        vault_key = self.current_vault_key()
+        if not 1 <= recovery_code_count <= 20:
+            raise ValueError("recovery_code_count must be between 1 and 20")
+        with self._connect() as conn:
+            self._migrate_schema(conn)
+            if not self._has_meta_key(conn, "totp_secret"):
+                raise ValueError("Two-factor unlock is not enabled")
+            conn.execute("DELETE FROM recovery_codes")
+            return self._store_recovery_codes(conn, vault_key, recovery_code_count, self._now())
+
+    def rotate_totp_secret(self) -> VaultInitSetup:
+        vault_key = self.current_vault_key()
+        with self._connect() as conn:
+            self._migrate_schema(conn)
+            if not self._has_meta_key(conn, "totp_secret"):
+                raise ValueError("Two-factor unlock is not enabled")
+            totp_secret = self._generate_totp_secret()
+            conn.execute(
+                "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
+                ("totp_secret", Fernet(vault_key).encrypt(totp_secret.encode()).decode()),
+            )
+        return VaultInitSetup(totp_secret=totp_secret, otpauth_uri=self._build_otpauth_uri(totp_secret), recovery_codes=[])
+
+    def disable_two_factor(self, password: str) -> None:
+        vault_key = self.current_vault_key()
+        with self._connect() as conn:
+            self._migrate_schema(conn)
+            salt = base64.b64decode(self._meta(conn, "kdf_salt"))
+            self._verify_master_password_for_update(conn, password, salt, vault_key)
+            conn.execute("DELETE FROM meta WHERE key=?", ("totp_secret",))
+            conn.execute("DELETE FROM recovery_codes")
 
     def add_secret(self, secret: SecretInput) -> None:
         fernet = self._require_unlocked()
@@ -744,6 +887,14 @@ class VaultStore:
                 updated_at TEXT NOT NULL,
                 UNIQUE(name, url, username)
             );
+            CREATE TABLE IF NOT EXISTS recovery_codes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                code_hash TEXT NOT NULL UNIQUE,
+                salt TEXT NOT NULL,
+                wrapped_vault_key TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                used_at TEXT
+            );
             """
         )
 
@@ -767,16 +918,109 @@ class VaultStore:
             if not self._has_schema(conn):
                 raise VaultNotInitialized(f"Vault is not initialized at {self.db_path}")
 
+    def is_initialized(self) -> bool:
+        if not self.db_path.exists():
+            return False
+        with self._connect() as conn:
+            return self._has_schema(conn)
+
+    def has_two_factor_enabled(self) -> bool:
+        if not self.is_initialized():
+            return False
+        with self._connect() as conn:
+            self._migrate_schema(conn)
+            return self._has_meta_key(conn, "totp_secret")
+
     def _meta(self, conn: sqlite3.Connection, key: str) -> str:
         row = conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
         if row is None:
             raise VaultNotInitialized(f"Missing metadata: {key}")
         return str(row["value"])
 
+    def _has_meta_key(self, conn: sqlite3.Connection, key: str) -> bool:
+        return conn.execute("SELECT 1 FROM meta WHERE key=?", (key,)).fetchone() is not None
+
+    def _verify_master_password_for_update(self, conn: sqlite3.Connection, password: str, salt: bytes, vault_key: bytes) -> None:
+        scheme = self._meta(conn, "encryption_scheme") if self._has_meta_key(conn, "encryption_scheme") else "v1"
+        derived = self._derive_key(password, salt)
+        try:
+            if scheme == "v1":
+                verifier = self._meta(conn, "verifier")
+                if Fernet(derived).decrypt(verifier.encode()) != b"henry-vault-verifier-v1":
+                    raise VaultLocked("Wrong master password")
+            else:
+                master_wrap = self._meta(conn, "master_wrap")
+                if Fernet(derived).decrypt(master_wrap.encode()) != vault_key:
+                    raise VaultLocked("Wrong master password")
+        except InvalidToken as exc:
+            raise VaultLocked("Wrong master password") from exc
+
+    def _store_recovery_codes(self, conn: sqlite3.Connection, vault_key: bytes, recovery_code_count: int, now: str) -> list[str]:
+        recovery_codes: list[str] = []
+        for _ in range(recovery_code_count):
+            code = self._generate_recovery_code()
+            code_salt = os.urandom(16)
+            normalized_code = self._normalize_recovery_code(code)
+            code_key = Fernet(self._derive_key(normalized_code, code_salt))
+            wrapped_vault_key = code_key.encrypt(vault_key).decode()
+            conn.execute(
+                """
+                INSERT INTO recovery_codes(code_hash, salt, wrapped_vault_key, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    hashlib.sha256(normalized_code.encode()).hexdigest(),
+                    base64.b64encode(code_salt).decode(),
+                    wrapped_vault_key,
+                    now,
+                ),
+            )
+            recovery_codes.append(code)
+        return recovery_codes
+
+    def _generate_totp_secret(self) -> str:
+        return base64.b32encode(os.urandom(20)).decode().rstrip("=")
+
+    def _build_otpauth_uri(self, secret: str, account_name: str = "Henry Vault", issuer: str = "Henry Vault") -> str:
+        label = quote(f"{issuer}:{account_name}")
+        return f"otpauth://totp/{label}?secret={secret}&issuer={quote(issuer)}&digits=6&period=30"
+
+    def _normalize_recovery_code(self, code: str) -> str:
+        return "".join(character for character in code.upper() if character.isalnum())
+
+    def _generate_recovery_code(self) -> str:
+        alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+        return "-".join("".join(secrets.choice(alphabet) for _ in range(5)) for _ in range(4))
+
+    def _verify_totp(self, secret: str, code: str, window: int = 1) -> bool:
+        normalized_code = "".join(character for character in code if character.isdigit())
+        if len(normalized_code) != 6:
+            return False
+        padded_secret = secret + "=" * ((8 - len(secret) % 8) % 8)
+        key = base64.b32decode(padded_secret, casefold=True)
+        now = int(datetime.now(UTC).timestamp())
+        for offset in range(-window, window + 1):
+            counter = (now // 30) + offset
+            digest = hmac.new(key, struct.pack(">Q", counter), hashlib.sha1).digest()
+            dynamic_offset = digest[-1] & 0x0F
+            value = struct.unpack(">I", digest[dynamic_offset:dynamic_offset + 4])[0] & 0x7FFFFFFF
+            if f"{value % 1_000_000:06d}" == normalized_code:
+                return True
+        return False
+
     def _require_unlocked(self) -> Fernet:
         if self._fernet is None:
             raise VaultLocked("Vault is locked. Call unlock() first.")
         return self._fernet
+
+    def current_vault_key(self) -> bytes:
+        if self._vault_key is None:
+            raise VaultLocked("Vault is locked. Call unlock() first.")
+        return self._vault_key
+
+    def unlock_with_vault_key(self, vault_key: bytes) -> None:
+        self._fernet = Fernet(vault_key)
+        self._vault_key = vault_key
 
     def _derive_key(self, password: str, salt: bytes) -> bytes:
         raw = hash_secret_raw(
