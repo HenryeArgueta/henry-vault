@@ -705,3 +705,50 @@ def test_web_index_includes_credential_transfer_controls(tmp_path):
     assert 'id="credentials-import-file"' in response.text
     assert '/api/credentials/export' in response.text
     assert '/api/credentials/import' in response.text
+
+
+def test_web_secrets_api_filters_by_tag(tmp_path):
+    db_path = tmp_path / "vault.db"
+    store = VaultStore(db_path)
+    store.init("pw")
+    store.unlock("pw")
+    store.add_secret(SecretInput(name="BOT_TOKEN", value="tok", project="discord", tags=["service"]))
+    store.add_secret(SecretInput(name="PLAIN", value="plain", project="default", tags=[]))
+
+    client = TestClient(create_app(db_path))
+    login = client.post("/api/login", json={"password": "pw"})
+    token = login.json()["token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    service_only = client.get("/api/secrets?tags=service", headers=headers).json()
+    assert any(s["name"] == "BOT_TOKEN" for s in service_only)
+    assert all(s["name"] != "PLAIN" for s in service_only)
+
+
+def test_web_index_includes_service_sections(tmp_path):
+    db_path = tmp_path / "vault.db"
+    VaultStore(db_path).init("pw")
+    client = TestClient(create_app(db_path))
+    response = client.get("/")
+    assert response.status_code == 200
+    assert 'id="add-service-form"' in response.text
+    assert 'id="service-name"' in response.text
+    assert 'id="service-fields"' in response.text
+    assert 'data-action="add-service-field"' in response.text
+    assert 'id="service-groups"' in response.text
+    assert 'Add API Service' in response.text
+    assert 'API Services' in response.text
+
+
+def test_web_index_includes_service_js(tmp_path):
+    db_path = tmp_path / "vault.db"
+    VaultStore(db_path).init("pw")
+    client = TestClient(create_app(db_path))
+    response = client.get("/")
+    assert response.status_code == 200
+    assert 'function addServiceField' in response.text
+    assert 'function loadServices' in response.text
+    assert 'function renderServiceGroups' in response.text
+    assert 'function deleteService' in response.text
+    assert 'tags=service' in response.text
+    assert 'add-service-form' in response.text

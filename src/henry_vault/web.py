@@ -1569,9 +1569,11 @@ def create_app(
         project: Optional[str] = None,
         environment: Optional[str] = None,
         query: Optional[str] = None,
+        tags: Optional[str] = None,
         store: VaultStore = Depends(store_for_session),
     ) -> list[dict]:
-        items = store.list_secrets(project=project, environment=environment, query=query)
+        tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else None
+        items = store.list_secrets(project=project, environment=environment, query=query, tags=tag_list)
         store.record_audit("web.secret.list", project=project, environment=environment, message=f"count={len(items)}")
         return [item.__dict__ for item in items]
 
