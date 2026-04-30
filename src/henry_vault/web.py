@@ -892,6 +892,7 @@ HTML = """
       await loadSecrets();
       await loadAttachments();
       await loadPasswords();
+      await loadServices();
       return false;
     }
 
@@ -1063,7 +1064,8 @@ HTML = """
       if (!unlocked) { setStatus('Unlock first', 'error'); return; }
       const res = await fetch('/api/secrets?' + secretQueryParams().toString());
       if (!res.ok) { setStatus('Could not list secrets', 'error'); return; }
-      renderSecretRows(await res.json());
+      const all = await res.json();
+      renderSecretRows(all.filter(s => !(s.tags || []).includes('service')));
       setStatus('Secrets loaded.');
     }
 
@@ -1351,6 +1353,138 @@ HTML = """
         </tr>`).join('');
       setStatus('Audit loaded.');
     }
+    function _slugify(name) {
+      return name.toLowerCase().replace(/[ \t\r\n]+/g, '-').replace(/[^a-z0-9-]/g, '').replace(/^-+|-+$/g, '');
+    }
+
+    function addServiceField() {
+      const container = document.getElementById('service-fields');
+      const div = document.createElement('div');
+      div.className = 'service-field-row';
+      div.innerHTML = '<input class="service-field-name" placeholder="Field name" />\'
+        + '<input class="service-field-value" type="password" placeholder="Value" />\'
+        + '<button type="button" class="fixed secondary remove-btn" data-action="remove-service-field">&#8722;</button>';
+      container.appendChild(div);
+    }
+
+    function removeServiceField(button) {
+      const row = button.closest('.service-field-row');
+      const container = document.getElementById('service-fields');
+      if (row && container.querySelectorAll('.service-field-row').length > 1) row.remove();
+    }
+
+    async function addService(event) {
+      event.preventDefault();
+      if (!unlocked) { setStatus('Unlock first', 'error'); return false; }
+      const serviceName = document.getElementById('service-name').value.trim();
+      const slug = _slugify(serviceName);
+      if (!slug) { setStatus('Enter a valid service name.', 'error'); return false; }
+      const environment = document.getElementById('service-environment').value.trim() || 'default';
+      const rows = document.querySelectorAll('#service-fields .service-field-row');
+      const fields = [];
+      for (const row of rows) {
+        const name = row.querySelector('.service-field-name').value.trim();
+        const value = row.querySelector('.service-field-value').value;
+        if (name) fields.push({name, value});
+      }
+      if (!fields.length) { setStatus('Add at least one field.', 'error'); return false; }
+      let saved = 0;
+      for (const field of fields) {
+        const res = await fetch('/api/secrets', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json', ...csrfHeaders()},
+          body: JSON.stringify({name: field.name, value: field.value, project: slug, environment, tags: ['service'], notes: ''}),
+        });
+        if (res.ok) saved++;
+      }
+      document.getElementById('service-name').value = '';
+      document.getElementById('service-environment').value = '';
+      document.querySelectorAll('#service-fields .service-field-row').forEach((r, i) => {
+        if (i > 0) r.remove();
+        else {
+          r.querySelector('.service-field-name').value = '';
+          r.querySelector('.service-field-value').value = '';
+        }
+      });
+      setStatus('Saved ' + saved + ' field(s) for ' + serviceName + '.', 'success');
+      await loadServices();
+      return false;
+    }
+
+    async function loadServices() {
+      if (!unlocked) return;
+      const res = await fetch('/api/secrets?tags=service');
+      if (!res.ok) return;
+      renderServiceGroups(await res.json());
+    }
+
+    function renderServiceGroups(items) {
+      const container = document.getElementById('service-groups');
+      if (!items || !items.length) {
+        container.textContent = 'No API services saved yet.';
+        return;
+      }
+      const grouped = {};
+      for (const item of items) {
+        if (!grouped[item.project]) grouped[item.project] = [];
+        grouped[item.project].push(item);
+      }
+      let html = '';
+      for (const [project, fields] of Object.entries(grouped)) {
+        html += '<div class="service-group">\'
+          + '<div class="service-group-header row">\'
+          + '<strong>' + escapeHtml(project) + '</strong>\'
+          + '<span class="muted">' + fields.length + ' field(s)</span>\'
+          + '<button class="fixed danger" type="button" data-action="delete-service" data-service="' + escapeHtml(project) + '">Delete service</button>\'
+          + '</div><table><thead><tr><th>Field</th><th>Value</th><th>Copy</th></tr></thead><tbody>';
+        for (const f of fields) {
+          html += '<tr><td><code>' + escapeHtml(f.name) + '</code></td>\'
+            + '<td><span class="muted">········</span></td>\'
+            + '<td><button class="fixed secondary" type="button" data-action="copy-service-field"\'
+            + ' data-name="' + escapeHtml(f.name) + '" data-project="' + escapeHtml(f.project) + '"\'
+            + ' data-environment="' + escapeHtml(f.environment) + '">Copy</button></td></tr>';
+        }
+        html += '</tbody></table></div>';
+      }
+      container.innerHTML = html;
+    }
+
+    async function copyServiceField(name, project, environment) {
+      const params = new URLSearchParams({name, project, environment});
+      if (window.ClipboardItem && navigator.clipboard?.write) {
+        try {
+          await navigator.clipboard.write([new ClipboardItem({
+            'text/plain': fetch('/api/secrets/reveal?' + params.toString())
+              .then(r => { if (!r.ok) throw new Error('failed'); return r.json(); })
+              .then(d => new Blob([d.value], {type: 'text/plain'})),
+          })]);
+          setStatus('Copied ' + name + '.', 'success');
+          return;
+        } catch (error) {
+          console.warn('ClipboardItem failed', error);
+        }
+      }
+      const res = await fetch('/api/secrets/reveal?' + params.toString());
+      if (!res.ok) { setStatus('Could not copy ' + name + '.', 'error'); return; }
+      const data = await res.json();
+      const copied = await copyTextToClipboard(data.value);
+      if (!copied) { setStatus('Could not copy ' + name + '. Your browser may block clipboard access.', 'error'); return; }
+      setStatus('Copied ' + name + '.', 'success');
+    }
+
+    async function deleteService(service) {
+      if (!confirm("Delete all fields for service '" + service + "'?")) return;
+      const buttons = document.querySelectorAll('[data-action="copy-service-field"][data-project="' + service + '"]');
+      let deleted = 0;
+      for (const btn of buttons) {
+        const params = new URLSearchParams({name: btn.dataset.name, project: btn.dataset.project, environment: btn.dataset.environment});
+        const res = await fetch('/api/secrets?' + params.toString(), {method: 'DELETE', headers: csrfHeaders()});
+        if (res.ok) deleted++;
+      }
+      setStatus('Deleted ' + deleted + ' field(s) for service \'' + service + '\'.', 'success');
+      await loadServices();
+    }
+
     function handleActionClick(event) {
       const button = event.target.closest('[data-action]');
       if (!button) return;
@@ -1372,6 +1506,10 @@ HTML = """
       else if (action === 'delete-attachment') deleteAttachment(name, project, environment);
       else if (action === 'copy-password') copyPassword(name, url, username);
       else if (action === 'delete-password') deletePassword(name, url, username);
+      else if (action === 'add-service-field') addServiceField();
+      else if (action === 'remove-service-field') removeServiceField(button);
+      else if (action === 'copy-service-field') copyServiceField(button.dataset.name, button.dataset.project, button.dataset.environment);
+      else if (action === 'delete-service') deleteService(button.dataset.service);
     }
 
     document.getElementById('setup-form')?.addEventListener('submit', initVault);
@@ -1381,6 +1519,7 @@ HTML = """
     document.getElementById('add-attachment-form')?.addEventListener('submit', addAttachment);
     document.getElementById('credentials-import-form')?.addEventListener('submit', importCredentials);
     document.getElementById('add-password-form')?.addEventListener('submit', addPassword);
+    document.getElementById('add-service-form')?.addEventListener('submit', addService);
     document.getElementById('theme-select')?.addEventListener('change', event => setTheme(event.target.value));
     document.addEventListener('click', handleActionClick);
   </script>
