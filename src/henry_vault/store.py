@@ -670,10 +670,16 @@ class VaultStore:
                         self.set_secret_metadata(name, project=project, environment=environment, expires_at=expires_at, rotation_url=rotation_url)
                     secret_count += 1
                 elif kind == "password":
-                    name = (row.get("name") or "").strip()
                     url = (row.get("url") or "").strip()
                     username = (row.get("username") or "").strip()
-                    value = row.get("value") or ""
+                    name = (row.get("name") or "").strip()
+                    if not name and url:
+                        from urllib.parse import urlparse
+                        try:
+                            name = urlparse(url).netloc or url
+                        except Exception:
+                            name = url
+                    value = row.get("value") or row.get("password") or ""
                     note = row.get("note") or ""
                     self.add_password(PasswordInput(name=name, url=url, username=username, password=value, note=note))
                     password_count += 1

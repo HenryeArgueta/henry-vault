@@ -462,6 +462,15 @@ def test_web_index_includes_edit_search_and_attachment_controls(tmp_path):
     assert '#passwords .row {' in response.text
     assert '#passwords .subgroup + .subgroup {' in response.text
     assert '#passwords .credentials-tools .row {' in response.text
+    assert '#passwords table {' in response.text
+    assert 'table-layout: fixed' in response.text
+    assert '#passwords th:nth-child(1),' in response.text
+    assert '#passwords th:nth-child(6),' in response.text
+    assert '#passwords td:nth-child(6) button,' in response.text
+    assert 'type="button" data-action="copy-password"' in response.text
+    assert 'type="button" data-action="delete-password"' in response.text
+    assert 'navigator.clipboard.writeText' in response.text
+    assert 'setSelectionRange(0, textarea.value.length)' in response.text
     assert 'class="section-label"' in response.text
     assert 'Credentials tools' in response.text
     assert 'New password' in response.text

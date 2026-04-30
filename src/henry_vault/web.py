@@ -314,6 +314,37 @@ HTML = """
     #passwords .credentials-tools .row {
       align-items: stretch;
     }
+    #passwords table {
+      table-layout: fixed;
+    }
+    #passwords th,
+    #passwords td {
+      vertical-align: middle;
+    }
+    #passwords th:nth-child(1),
+    #passwords td:nth-child(1) {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    #passwords th:nth-child(2),
+    #passwords td:nth-child(2),
+    #passwords th:nth-child(4),
+    #passwords td:nth-child(4) {
+      overflow-wrap: anywhere;
+    }
+    #passwords th:nth-child(6),
+    #passwords td:nth-child(6),
+    #passwords th:nth-child(7),
+    #passwords td:nth-child(7) {
+      width: 7.5rem;
+      white-space: nowrap;
+      text-align: center;
+    }
+    #passwords td:nth-child(6) button,
+    #passwords td:nth-child(7) button {
+      width: 100%;
+    }
     #credentials-import-form {
       flex: 1 1 260px;
     }
@@ -368,6 +399,13 @@ HTML = """
     .row > * { flex: 1 1 180px; }
     .row .fixed { flex: 0 0 auto; }
     .hidden { display: none; }
+    .clipboard-helper {
+      position: fixed;
+      top: -9999px;
+      left: -9999px;
+      opacity: 0;
+      pointer-events: none;
+    }
     details { margin-top: 1rem; }
     summary { cursor: pointer; font-weight: 600; }
     .section-body { margin-top: 1rem; }
@@ -450,7 +488,7 @@ HTML = """
       <div class="top-group">
         <div class="section-label">Unlock</div>
         <form id="login-form" class="row">
-          <input id="password" class="fixed" type="password" placeholder="Master password" />
+          <input id="password" class="fixed" type="password" autocomplete="current-password" placeholder="Master password" />
           <input id="totp-code" class="fixed" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="Authenticator code (optional)" />
           <input id="recovery-code" class="fixed" type="text" autocomplete="off" placeholder="Recovery code (optional)" />
           <button class="fixed" type="submit">Unlock</button>
@@ -973,8 +1011,8 @@ HTML = """
         <tr>
           <td><code>${escapeHtml(p.name)}</code></td><td>${escapeHtml(p.url)}</td><td>${escapeHtml(p.username)}</td>
           <td>${escapeHtml(p.note)}</td><td>${escapeHtml(p.updated_at)}</td>
-          <td><button class="fixed secondary" data-action="copy-password" data-name="${escapeHtml(p.name)}" data-url="${escapeHtml(p.url)}" data-username="${escapeHtml(p.username)}">Copy</button></td>
-          <td><button class="fixed danger" data-action="delete-password" data-name="${escapeHtml(p.name)}" data-url="${escapeHtml(p.url)}" data-username="${escapeHtml(p.username)}">Delete</button></td>
+          <td><button class="fixed secondary" type="button" data-action="copy-password" data-name="${escapeHtml(p.name)}" data-url="${escapeHtml(p.url)}" data-username="${escapeHtml(p.username)}">Copy</button></td>
+          <td><button class="fixed danger" type="button" data-action="delete-password" data-name="${escapeHtml(p.name)}" data-url="${escapeHtml(p.url)}" data-username="${escapeHtml(p.username)}">Delete</button></td>
         </tr>`).join('');
     }
 
@@ -1112,12 +1150,64 @@ HTML = """
       return false;
     }
 
+    async function copyTextToClipboard(text) {
+      if (navigator.clipboard && window.isSecureContext) {
+        try {
+          await navigator.clipboard.writeText(text);
+          return true;
+        } catch (error) {
+          console.warn('navigator.clipboard.writeText failed', error);
+        }
+      }
+      const textarea = document.createElement('textarea');
+      textarea.className = 'clipboard-helper';
+      textarea.value = text;
+      textarea.setAttribute('readonly', '');
+      textarea.setAttribute('aria-hidden', 'true');
+      textarea.style.top = '0';
+      textarea.style.left = '0';
+      textarea.style.width = '1px';
+      textarea.style.height = '1px';
+      textarea.style.margin = '0';
+      textarea.style.padding = '0';
+      textarea.style.border = '0';
+      document.body.appendChild(textarea);
+      textarea.focus({preventScroll: true});
+      textarea.select();
+      textarea.setSelectionRange(0, textarea.value.length);
+      let copied = false;
+      try {
+        copied = document.execCommand('copy');
+      } catch (error) {
+        console.warn('document.execCommand("copy") failed', error);
+      }
+      document.body.removeChild(textarea);
+      return copied;
+    }
+
     async function copyPassword(name, url, username) {
       const params = new URLSearchParams({name, url, username});
+      if (window.ClipboardItem && navigator.clipboard?.write) {
+        try {
+          await navigator.clipboard.write([new ClipboardItem({
+            'text/plain': fetch('/api/passwords/reveal?' + params.toString())
+              .then(r => { if (!r.ok) throw new Error('fetch failed'); return r.json(); })
+              .then(d => new Blob([d.password], {type: 'text/plain'})),
+          })]);
+          setStatus(`Copied password for ${name}.`, 'success');
+          return;
+        } catch (error) {
+          console.warn('ClipboardItem write failed', error);
+        }
+      }
       const res = await fetch('/api/passwords/reveal?' + params.toString());
       if (!res.ok) { setStatus('Copy password failed', 'error'); return; }
       const data = await res.json();
-      await navigator.clipboard.writeText(data.password).catch(() => {});
+      const copied = await copyTextToClipboard(data.password);
+      if (!copied) {
+        setStatus(`Could not copy password for ${name}. Your browser may block clipboard access.`, 'error');
+        return;
+      }
       setStatus(`Copied password for ${name}.`, 'success');
     }
 
@@ -1132,11 +1222,28 @@ HTML = """
 
     async function reveal(name, project, environment) {
       const params = new URLSearchParams({name, project, environment});
+      if (window.ClipboardItem && navigator.clipboard?.write) {
+        try {
+          await navigator.clipboard.write([new ClipboardItem({
+            'text/plain': fetch('/api/secrets/reveal?' + params.toString())
+              .then(r => { if (!r.ok) throw new Error('fetch failed'); return r.json(); })
+              .then(d => new Blob([d.value], {type: 'text/plain'})),
+          })]);
+          setStatus(`${name} copied to clipboard.`, 'success');
+          return;
+        } catch (error) {
+          console.warn('ClipboardItem write failed', error);
+        }
+      }
       const res = await fetch('/api/secrets/reveal?' + params.toString());
       if (!res.ok) { setStatus('Reveal failed', 'error'); return; }
       const data = await res.json();
-      await navigator.clipboard.writeText(data.value).catch(() => {});
-      setStatus(`${name} copied to clipboard if browser allowed it.`, 'success');
+      const copied = await copyTextToClipboard(data.value);
+      if (!copied) {
+        setStatus(`Could not copy ${name}. Your browser may block clipboard access.`, 'error');
+        return;
+      }
+      setStatus(`${name} copied to clipboard.`, 'success');
     }
 
     async function deleteSecret(name, project, environment) {
