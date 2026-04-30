@@ -22,7 +22,7 @@ def test_cli_init_add_get_list_export_env(tmp_path, monkeypatch):
         [
             "--db",
             str(db_path),
-            "add",
+            "secret-add",
             "API_KEY",
             "secret-value",
             "--project",
@@ -36,11 +36,11 @@ def test_cli_init_add_get_list_export_env(tmp_path, monkeypatch):
     assert result.exit_code == 0
     assert "saved" in result.output.lower()
 
-    result = runner.invoke(app, ["--db", str(db_path), "get", "API_KEY", "--project", "demo", "--env", "dev"])
+    result = runner.invoke(app, ["--db", str(db_path), "secret-get", "API_KEY", "--project", "demo", "--env", "dev"])
     assert result.exit_code == 0
     assert result.output.strip() == "secret-value"
 
-    result = runner.invoke(app, ["--db", str(db_path), "list", "--project", "demo", "--env", "dev"])
+    result = runner.invoke(app, ["--db", str(db_path), "secret-list", "--project", "demo", "--env", "dev"])
     assert result.exit_code == 0
     assert "API_KEY" in result.output
     assert "secret-value" not in result.output
@@ -64,7 +64,7 @@ def test_cli_import_env(tmp_path, monkeypatch):
 
     assert result.exit_code == 0
     assert "Imported 2 secrets" in result.output
-    result = runner.invoke(app, ["--db", str(db_path), "get", "DB_PASSWORD", "--project", "demo", "--env", "dev"])
+    result = runner.invoke(app, ["--db", str(db_path), "secret-get", "DB_PASSWORD", "--project", "demo", "--env", "dev"])
     assert result.output.strip() == "secret"
 
 
@@ -75,7 +75,7 @@ def test_cli_backup_export_and_import(tmp_path, monkeypatch):
     monkeypatch.setenv("HENRY_VAULT_PASSWORD", "pw")
 
     assert runner.invoke(app, ["--db", str(source_db), "init"]).exit_code == 0
-    assert runner.invoke(app, ["--db", str(source_db), "add", "TOKEN", "secret", "--project", "demo", "--env", "prod"]).exit_code == 0
+    assert runner.invoke(app, ["--db", str(source_db), "secret-add", "TOKEN", "secret", "--project", "demo", "--env", "prod"]).exit_code == 0
     result = runner.invoke(app, ["--db", str(source_db), "backup-export", str(backup_path), "--backup-password", "backup-pw"])
     assert result.exit_code == 0
     assert backup_path.exists()
@@ -84,7 +84,7 @@ def test_cli_backup_export_and_import(tmp_path, monkeypatch):
     result = runner.invoke(app, ["--db", str(restored_db), "backup-import", str(backup_path), "--backup-password", "backup-pw"])
     assert result.exit_code == 0
     assert "Imported 1 secrets" in result.output
-    result = runner.invoke(app, ["--db", str(restored_db), "get", "TOKEN", "--project", "demo", "--env", "prod"])
+    result = runner.invoke(app, ["--db", str(restored_db), "secret-get", "TOKEN", "--project", "demo", "--env", "prod"])
     assert result.output.strip() == "secret"
 
 
@@ -95,7 +95,7 @@ def test_cli_export_and_import_credentials_csv(tmp_path, monkeypatch):
     monkeypatch.setenv("HENRY_VAULT_PASSWORD", "pw")
 
     assert runner.invoke(app, ["--db", str(source_db), "init"]).exit_code == 0
-    assert runner.invoke(app, ["--db", str(source_db), "add", "API_KEY", "secret", "--project", "demo", "--env", "prod"]).exit_code == 0
+    assert runner.invoke(app, ["--db", str(source_db), "secret-add", "API_KEY", "secret", "--project", "demo", "--env", "prod"]).exit_code == 0
     assert runner.invoke(app, ["--db", str(source_db), "password-add", "GitHub", "https://github.com", "henry", "browser-password", "--note", "personal account"]).exit_code == 0
 
     result = runner.invoke(app, ["--db", str(source_db), "export-credentials", str(export_path)])
@@ -107,7 +107,7 @@ def test_cli_export_and_import_credentials_csv(tmp_path, monkeypatch):
     assert runner.invoke(app, ["--db", str(restored_db), "init"]).exit_code == 0
     result = runner.invoke(app, ["--db", str(restored_db), "import-credentials", str(export_path)])
     assert result.exit_code == 0
-    assert runner.invoke(app, ["--db", str(restored_db), "get", "API_KEY", "--project", "demo", "--env", "prod"]).output.strip() == "secret"
+    assert runner.invoke(app, ["--db", str(restored_db), "secret-get", "API_KEY", "--project", "demo", "--env", "prod"]).output.strip() == "secret"
     assert runner.invoke(app, ["--db", str(restored_db), "password-get", "GitHub", "https://github.com", "henry"]).output.strip() == "browser-password"
 
 
@@ -118,7 +118,7 @@ def test_cli_scan_reports_findings_without_full_secret(tmp_path, monkeypatch):
     (repo / ".env").write_text("API_KEY=known-secret\n")
     monkeypatch.setenv("HENRY_VAULT_PASSWORD", "pw")
     assert runner.invoke(app, ["--db", str(db_path), "init"]).exit_code == 0
-    assert runner.invoke(app, ["--db", str(db_path), "add", "API_KEY", "known-secret"]).exit_code == 0
+    assert runner.invoke(app, ["--db", str(db_path), "secret-add", "API_KEY", "known-secret"]).exit_code == 0
 
     result = runner.invoke(app, ["--db", str(db_path), "scan", str(repo), "--match-vault"])
 
@@ -131,11 +131,11 @@ def test_cli_list_filters_by_query_and_tag_without_values(tmp_path, monkeypatch)
     db_path = tmp_path / "vault.db"
     monkeypatch.setenv("HENRY_VAULT_PASSWORD", "pw")
     assert runner.invoke(app, ["--db", str(db_path), "init"]).exit_code == 0
-    assert runner.invoke(app, ["--db", str(db_path), "add", "OPENAI_API_KEY", "openai-secret", "--tag", "prod", "--tag", "ai"]).exit_code == 0
-    assert runner.invoke(app, ["--db", str(db_path), "add", "DISCORD_TOKEN", "discord-secret", "--tag", "prod", "--tag", "discord"]).exit_code == 0
-    assert runner.invoke(app, ["--db", str(db_path), "add", "OPENAI_DEV_KEY", "dev-secret", "--tag", "dev", "--tag", "ai"]).exit_code == 0
+    assert runner.invoke(app, ["--db", str(db_path), "secret-add", "OPENAI_API_KEY", "openai-secret", "--tag", "prod", "--tag", "ai"]).exit_code == 0
+    assert runner.invoke(app, ["--db", str(db_path), "secret-add", "DISCORD_TOKEN", "discord-secret", "--tag", "prod", "--tag", "discord"]).exit_code == 0
+    assert runner.invoke(app, ["--db", str(db_path), "secret-add", "OPENAI_DEV_KEY", "dev-secret", "--tag", "dev", "--tag", "ai"]).exit_code == 0
 
-    result = runner.invoke(app, ["--db", str(db_path), "list", "--query", "api", "--tag", "prod"])
+    result = runner.invoke(app, ["--db", str(db_path), "secret-list", "--query", "api", "--tag", "prod"])
 
     assert result.exit_code == 0
     assert "OPENAI_API_KEY" in result.output
@@ -265,8 +265,8 @@ def test_cli_audit_lists_recent_events(tmp_path, monkeypatch):
     db_path = tmp_path / "vault.db"
     monkeypatch.setenv("HENRY_VAULT_PASSWORD", "pw")
     assert runner.invoke(app, ["--db", str(db_path), "init"]).exit_code == 0
-    assert runner.invoke(app, ["--db", str(db_path), "add", "TOKEN", "secret"]).exit_code == 0
-    assert runner.invoke(app, ["--db", str(db_path), "get", "TOKEN"]).exit_code == 0
+    assert runner.invoke(app, ["--db", str(db_path), "secret-add", "TOKEN", "secret"]).exit_code == 0
+    assert runner.invoke(app, ["--db", str(db_path), "secret-get", "TOKEN"]).exit_code == 0
 
     result = runner.invoke(app, ["--db", str(db_path), "audit", "--limit", "10"])
 
@@ -280,7 +280,7 @@ def test_cli_set_metadata_and_doctor(tmp_path, monkeypatch):
     db_path = tmp_path / "vault.db"
     monkeypatch.setenv("HENRY_VAULT_PASSWORD", "pw")
     assert runner.invoke(app, ["--db", str(db_path), "init"]).exit_code == 0
-    assert runner.invoke(app, ["--db", str(db_path), "add", "TOKEN", "secret"]).exit_code == 0
+    assert runner.invoke(app, ["--db", str(db_path), "secret-add", "TOKEN", "secret"]).exit_code == 0
     result = runner.invoke(
         app,
         ["--db", str(db_path), "set-metadata", "TOKEN", "--expires-at", "2027-05-01", "--rotation-url", "https://example.com/rotate"],
@@ -297,7 +297,7 @@ def test_cli_rotate_updates_value_metadata_and_audit_without_leaking_values(tmp_
     db_path = tmp_path / "vault.db"
     monkeypatch.setenv("HENRY_VAULT_PASSWORD", "pw")
     assert runner.invoke(app, ["--db", str(db_path), "init"]).exit_code == 0
-    assert runner.invoke(app, ["--db", str(db_path), "add", "TOKEN", "old-value", "--project", "demo", "--env", "prod"]).exit_code == 0
+    assert runner.invoke(app, ["--db", str(db_path), "secret-add", "TOKEN", "old-value", "--project", "demo", "--env", "prod"]).exit_code == 0
 
     result = runner.invoke(
         app,
@@ -323,11 +323,11 @@ def test_cli_rotate_updates_value_metadata_and_audit_without_leaking_values(tmp_
     assert "old-value" not in result.output
     assert "new-value" not in result.output
 
-    result = runner.invoke(app, ["--db", str(db_path), "get", "TOKEN", "--project", "demo", "--env", "prod"])
+    result = runner.invoke(app, ["--db", str(db_path), "secret-get", "TOKEN", "--project", "demo", "--env", "prod"])
     assert result.exit_code == 0
     assert result.output.strip() == "new-value"
 
-    result = runner.invoke(app, ["--db", str(db_path), "list", "--project", "demo", "--env", "prod"])
+    result = runner.invoke(app, ["--db", str(db_path), "secret-list", "--project", "demo", "--env", "prod"])
     assert result.exit_code == 0
     assert "TOKEN" in result.output
     assert "new-value" not in result.output
@@ -438,9 +438,9 @@ def test_cli_doctor_filters_project_and_env(tmp_path, monkeypatch):
     db_path = tmp_path / "vault.db"
     monkeypatch.setenv("HENRY_VAULT_PASSWORD", "pw")
     assert runner.invoke(app, ["--db", str(db_path), "init"]).exit_code == 0
-    assert runner.invoke(app, ["--db", str(db_path), "add", "BAD", "secret", "--project", "demo", "--env", "prod"]).exit_code == 0
-    assert runner.invoke(app, ["--db", str(db_path), "add", "OTHER", "secret", "--project", "other", "--env", "prod"]).exit_code == 0
-    assert runner.invoke(app, ["--db", str(db_path), "add", "DEV", "secret", "--project", "demo", "--env", "dev"]).exit_code == 0
+    assert runner.invoke(app, ["--db", str(db_path), "secret-add", "BAD", "secret", "--project", "demo", "--env", "prod"]).exit_code == 0
+    assert runner.invoke(app, ["--db", str(db_path), "secret-add", "OTHER", "secret", "--project", "other", "--env", "prod"]).exit_code == 0
+    assert runner.invoke(app, ["--db", str(db_path), "secret-add", "DEV", "secret", "--project", "demo", "--env", "dev"]).exit_code == 0
 
     result = runner.invoke(app, ["--db", str(db_path), "doctor", "--project", "demo", "--env", "prod"])
 
@@ -454,7 +454,7 @@ def test_cli_profile_set_list_and_doctor_missing_required_secret(tmp_path, monke
     db_path = tmp_path / "vault.db"
     monkeypatch.setenv("HENRY_VAULT_PASSWORD", "pw")
     assert runner.invoke(app, ["--db", str(db_path), "init"]).exit_code == 0
-    assert runner.invoke(app, ["--db", str(db_path), "add", "API_KEY", "secret-value", "--project", "demo", "--env", "prod"]).exit_code == 0
+    assert runner.invoke(app, ["--db", str(db_path), "secret-add", "API_KEY", "secret-value", "--project", "demo", "--env", "prod"]).exit_code == 0
 
     result = runner.invoke(
         app,
@@ -489,7 +489,7 @@ def test_cli_run_refuses_missing_required_profile_secret_without_starting_comman
     db_path = tmp_path / "vault.db"
     monkeypatch.setenv("HENRY_VAULT_PASSWORD", "pw")
     assert runner.invoke(app, ["--db", str(db_path), "init"]).exit_code == 0
-    assert runner.invoke(app, ["--db", str(db_path), "add", "API_KEY", "secret-value", "--project", "demo", "--env", "prod"]).exit_code == 0
+    assert runner.invoke(app, ["--db", str(db_path), "secret-add", "API_KEY", "secret-value", "--project", "demo", "--env", "prod"]).exit_code == 0
     assert runner.invoke(
         app,
         [
@@ -523,7 +523,7 @@ def test_cli_run_allow_missing_starts_command_with_partial_profile(tmp_path, mon
     output_path = tmp_path / "run-output.txt"
     monkeypatch.setenv("HENRY_VAULT_PASSWORD", "pw")
     assert runner.invoke(app, ["--db", str(db_path), "init"]).exit_code == 0
-    assert runner.invoke(app, ["--db", str(db_path), "add", "API_KEY", "secret-value", "--project", "demo", "--env", "prod"]).exit_code == 0
+    assert runner.invoke(app, ["--db", str(db_path), "secret-add", "API_KEY", "secret-value", "--project", "demo", "--env", "prod"]).exit_code == 0
     assert runner.invoke(
         app,
         [

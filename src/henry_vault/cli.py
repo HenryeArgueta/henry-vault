@@ -169,8 +169,8 @@ def two_factor_disable(ctx: typer.Context) -> None:
     typer.echo("Two-factor unlock disabled.")
 
 
-@app.command()
-def add(
+@app.command("secret-add")
+def secret_add(
     ctx: typer.Context,
     name: str,
     value: Annotated[Optional[str], typer.Argument(help="Secret value. Omit to prompt hidden input.")] = None,
@@ -192,7 +192,7 @@ def add(
     typer.echo(f"Saved {name} [{project}/{env}]")
 
 
-@app.command("get")
+@app.command("secret-get")
 def get_secret(ctx: typer.Context, name: str, project: ProjectOpt = "default", env: EnvOpt = "default") -> None:
     """Print one secret value."""
     store = _unlock(
@@ -208,8 +208,8 @@ def get_secret(ctx: typer.Context, name: str, project: ProjectOpt = "default", e
     typer.echo(secret.value)
 
 
-@app.command("list")
-def list_secrets(
+@app.command("secret-list")
+def secret_list(
     ctx: typer.Context,
     project: Annotated[Optional[str], typer.Option("--project")] = None,
     env: Annotated[Optional[str], typer.Option("--env")] = None,
@@ -236,12 +236,12 @@ def list_secrets(
         typer.echo("No secrets found.")
         return
     for item in items:
-        tags = ",".join(item.tags)
-        typer.echo(f"{item.project}/{item.environment} {item.name} tags=[{tags}] updated={item.updated_at}")
+        tags_str = ",".join(item.tags)
+        typer.echo(f"{item.project}/{item.environment} {item.name} tags=[{tags_str}] updated={item.updated_at}")
 
 
-@app.command("delete")
-def delete_secret(ctx: typer.Context, name: str, project: ProjectOpt = "default", env: EnvOpt = "default") -> None:
+@app.command("secret-delete")
+def secret_delete(ctx: typer.Context, name: str, project: ProjectOpt = "default", env: EnvOpt = "default") -> None:
     """Delete one secret."""
     store = _unlock(
         ctx.obj["db"],
@@ -295,19 +295,37 @@ def password_list(
 
 
 @app.command("password-get")
-def password_get(ctx: typer.Context, name: str, url: str, username: str) -> None:
-    """Print one password value."""
+def password_get(
+    ctx: typer.Context,
+    name: str,
+    url: Annotated[Optional[str], typer.Argument(help="URL (required for exact lookup)")] = None,
+    username: Annotated[Optional[str], typer.Argument(help="Username (required for exact lookup)")] = None,
+) -> None:
+    """Print password(s) matching name. Omit url and username to search by name."""
     store = _unlock(
         ctx.obj["db"],
         totp_code=ctx.obj.get("totp_code"),
         recovery_code=ctx.obj.get("recovery_code"),
     )
-    password = store.get_password(name, url=url, username=username)
-    if password is None:
-        store.record_audit("password.get", secret_name=name, status="not_found", message=f"url={url} username={username}")
-        raise typer.Exit(1)
-    store.record_audit("password.get", secret_name=name, message=f"url={url} username={username}")
-    typer.echo(password.password)
+    if url is not None and username is not None:
+        password = store.get_password(name, url=url, username=username)
+        if password is None:
+            store.record_audit("password.get", secret_name=name, status="not_found", message=f"url={url} username={username}")
+            raise typer.Exit(1)
+        store.record_audit("password.get", secret_name=name, message=f"url={url} username={username}")
+        typer.echo(password.password)
+    else:
+        items = store.list_passwords(query=name)
+        if not items:
+            store.record_audit("password.get", secret_name=name, status="not_found")
+            typer.echo(f"No passwords found matching '{name}'.", err=True)
+            raise typer.Exit(1)
+        for item in items:
+            pw = store.get_password(item.name, url=item.url, username=item.username)
+            if pw is None:
+                continue
+            store.record_audit("password.get", secret_name=item.name, message=f"url={item.url} username={item.username}")
+            typer.echo(f"name={item.name}  url={item.url}  username={item.username}  password={pw.password}")
 
 
 @app.command("password-delete")
