@@ -386,6 +386,26 @@ class VaultStore:
             cur = conn.execute("DELETE FROM secrets WHERE name=? AND project=? AND environment=?", (name, project, environment))
         return cur.rowcount > 0
 
+    def list_service_names(self) -> list[str]:
+        self._require_unlocked()
+        items = self.list_secrets(tags=["service"])
+        seen: set[str] = set()
+        names: list[str] = []
+        for item in items:
+            if item.project not in seen:
+                seen.add(item.project)
+                names.append(item.project)
+        return sorted(names)
+
+    def delete_service(self, service: str) -> int:
+        self._require_unlocked()
+        fields = self.list_secrets(project=service, tags=["service"])
+        count = 0
+        for field in fields:
+            if self.delete_secret(field.name, project=field.project, environment=field.environment):
+                count += 1
+        return count
+
     def add_password(self, password: PasswordInput) -> None:
         fernet = self._require_unlocked()
         now = self._now()

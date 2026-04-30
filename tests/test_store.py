@@ -325,3 +325,24 @@ def test_init_refuses_to_overwrite_existing_vault(tmp_path):
 
     with pytest.raises(VaultAlreadyExists):
         store.init("pw2")
+
+
+def test_store_service_helpers(tmp_path):
+    from henry_vault.store import SecretInput, VaultStore
+
+    db = tmp_path / "vault.db"
+    store = VaultStore(db)
+    store.init("pw")
+    store.unlock("pw")
+
+    store.add_secret(SecretInput(name="BOT_TOKEN", value="tok-123", project="discord", tags=["service"]))
+    store.add_secret(SecretInput(name="APP_ID", value="app-456", project="discord", tags=["service"]))
+    store.add_secret(SecretInput(name="API_KEY", value="key-789", project="github", tags=["service"]))
+    store.add_secret(SecretInput(name="OTHER", value="plain", project="default"))
+
+    assert sorted(store.list_service_names()) == ["discord", "github"]
+
+    deleted = store.delete_service("discord")
+    assert deleted == 2
+    assert store.list_service_names() == ["github"]
+    assert store.get_secret("OTHER", project="default") is not None
