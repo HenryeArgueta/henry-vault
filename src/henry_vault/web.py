@@ -430,6 +430,14 @@ HTML = """
     .toast.success { border-color: #166534; }
     .toast.error { border-color: #7f1d1d; }
     .section-card { margin-top: 1rem; }
+    .service-group { margin-bottom: 1.25rem; }
+    .service-group:last-child { margin-bottom: 0; }
+    .service-group-header { margin-bottom: .5rem; align-items: center; }
+    .service-group-header strong { font-size: 1rem; flex: 1 1 auto; }
+    .service-field-row { display: flex; gap: .5rem; align-items: center; margin-bottom: .4rem; }
+    .service-field-row input { flex: 1 1 160px; }
+    .service-field-row .remove-btn { flex: 0 0 auto; }
+    #service-fields { margin: .5rem 0; }
     @media (max-width: 820px) {
       body { margin: 1rem auto; width: calc(100vw - 2rem); }
       .row { flex-direction: column; align-items: stretch; }
@@ -577,6 +585,41 @@ HTML = """
           <thead><tr><th>Time</th><th>Action</th><th>Status</th><th>Scope</th><th>Secret</th><th>Message</th></tr></thead>
           <tbody id="audit-events"></tbody>
         </table>
+      </div>
+    </details>
+  </div>
+
+  <div class="card section-card">
+    <details open>
+      <summary>Add API Service</summary>
+      <div class="section-body stack">
+        <p class="muted">Save a group of related credentials (tokens, keys, IDs) under one service name.</p>
+        <form id="add-service-form" class="stack">
+          <div class="row">
+            <label>Service name <input id="service-name" required placeholder="Discord" /></label>
+            <label>Environment <input id="service-environment" list="environment-options" placeholder="default" /></label>
+          </div>
+          <div id="service-fields">
+            <div class="service-field-row">
+              <input class="service-field-name" placeholder="Field name (e.g. BOT_TOKEN)" />
+              <input class="service-field-value" type="password" placeholder="Value" />
+              <button type="button" class="fixed secondary remove-btn" data-action="remove-service-field">&#8722;</button>
+            </div>
+          </div>
+          <div class="row">
+            <button type="button" class="fixed secondary" data-action="add-service-field">+ Add field</button>
+            <button type="submit">Save service</button>
+          </div>
+        </form>
+      </div>
+    </details>
+  </div>
+
+  <div class="card section-card">
+    <details open>
+      <summary>API Services</summary>
+      <div class="section-body">
+        <div id="service-groups" class="muted">Unlock to load services.</div>
       </div>
     </details>
   </div>
