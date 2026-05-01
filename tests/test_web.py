@@ -215,8 +215,10 @@ def test_web_responses_include_security_headers(tmp_path):
     assert response.headers["x-frame-options"] == "DENY"
     assert "default-src 'self'" in csp
     assert "'unsafe-inline'" not in csp
-    assert "script-src 'self' 'sha256-" in csp
-    assert "style-src 'self' 'sha256-" in csp
+    assert "script-src 'self' 'nonce-" in csp
+    assert "style-src 'self' 'nonce-" in csp
+    assert "<script nonce=" in response.text
+    assert "<style nonce=" in response.text
 
 
 def test_web_index_avoids_inline_event_handlers_and_styles(tmp_path):
@@ -253,6 +255,31 @@ def test_web_index_includes_doctor_and_audit_controls(tmp_path):
     assert 'id="audit-events"' in response.text
     assert 'id="doctor"' not in response.text
     assert 'id="audit"' not in response.text
+
+
+def test_web_index_renders_unlock_form_visible_for_initialized_vault(tmp_path):
+    db_path = tmp_path / "vault.db"
+    store = VaultStore(db_path)
+    store.init("pw")
+
+    client = TestClient(create_app(db_path))
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert '<div class="card" id="login-card">' in response.text
+    assert '<input id="password" class="fixed" type="password"' in response.text
+    assert '<div class="card hidden" id="setup-card">' in response.text
+
+
+def test_web_index_renders_setup_visible_for_uninitialized_vault(tmp_path):
+    db_path = tmp_path / "vault.db"
+
+    client = TestClient(create_app(db_path))
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert '<div class="card" id="setup-card">' in response.text
+    assert '<div class="card hidden" id="login-card">' in response.text
 
 
 def test_web_init_flow_exposes_setup_qr_and_recovery_codes(tmp_path):

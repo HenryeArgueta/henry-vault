@@ -448,6 +448,12 @@ HTML = """
   </style>
 </head>
 <body>
+  <noscript>
+    <div class="card">
+      <strong>JavaScript is required for the Henry Vault web UI.</strong>
+      <p class="muted">Enable JavaScript for this local page, then unlock with your master password.</p>
+    </div>
+  </noscript>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <div id="topbar" class="topbar">
     <h1 class="hero-title">Henry Vault <span id="theme-name" class="theme-badge">DarkLuxury</span></h1>
@@ -601,8 +607,8 @@ HTML = """
           </div>
           <div id="service-fields">
             <div class="service-field-row">
-              <input class="service-field-name" placeholder="Field name (e.g. BOT_TOKEN)" />
-              <input class="service-field-value" type="password" placeholder="Value" />
+              <input class="service-field-name" name="service-field-name" placeholder="Field name (e.g. BOT_TOKEN)" />
+              <input class="service-field-value" name="service-field-value" type="password" placeholder="Value" />
               <button type="button" class="fixed secondary remove-btn" data-action="remove-service-field">&#8722;</button>
             </div>
           </div>
@@ -703,6 +709,23 @@ HTML = """
       {value: 'sunset-amber', label: 'Sunset Amber'},
     ];
 
+    function getStoredPreference(key) {
+      try {
+        return window.localStorage ? localStorage.getItem(key) : null;
+      } catch (error) {
+        console.warn('localStorage read failed', error);
+        return null;
+      }
+    }
+
+    function setStoredPreference(key, value) {
+      try {
+        if (window.localStorage) localStorage.setItem(key, value);
+      } catch (error) {
+        console.warn('localStorage write failed', error);
+      }
+    }
+
     function csrfHeaders() {
       return csrfToken ? {'X-CSRF-Token': csrfToken} : {};
     }
@@ -714,11 +737,13 @@ HTML = """
     function applyTheme(theme) {
       const resolved = THEMES.some(item => item.value === theme) ? theme : 'dark-luxury';
       document.body.dataset.theme = resolved;
-      localStorage.setItem('hv-theme', resolved);
+      setStoredPreference('hv-theme', resolved);
       const select = document.getElementById('theme-select');
       if (select) select.value = resolved;
-      document.getElementById('theme-toggle').textContent = 'Toggle theme';
-      document.getElementById('theme-name').textContent = themeLabel(resolved);
+      const toggle = document.getElementById('theme-toggle');
+      const badge = document.getElementById('theme-name');
+      if (toggle) toggle.textContent = 'Toggle theme';
+      if (badge) badge.textContent = themeLabel(resolved);
     }
 
     function setTheme(theme) {
@@ -736,8 +761,9 @@ HTML = """
     function applyDensity(density) {
       const resolved = density === 'compact' ? 'compact' : 'comfortable';
       document.body.dataset.density = resolved;
-      localStorage.setItem('hv-density', resolved);
-      document.getElementById('density-toggle').textContent = resolved === 'compact' ? 'Comfortable mode' : 'Compact mode';
+      setStoredPreference('hv-density', resolved);
+      const toggle = document.getElementById('density-toggle');
+      if (toggle) toggle.textContent = resolved === 'compact' ? 'Comfortable mode' : 'Compact mode';
     }
 
     function toggleDensity() {
@@ -746,13 +772,13 @@ HTML = """
       setStatus(`Density switched to ${document.body.dataset.density}.`);
     }
 
-    const storedTheme = localStorage.getItem('hv-theme');
+    const storedTheme = getStoredPreference('hv-theme');
     const themeSelect = document.getElementById('theme-select');
     if (themeSelect) {
       themeSelect.innerHTML = THEMES.map(item => `<option value="${escapeHtml(item.value)}">${escapeHtml(item.label)}</option>`).join('');
     }
     applyTheme(storedTheme === 'light' ? 'pearl-light' : storedTheme || 'dark-luxury');
-    const storedDensity = localStorage.getItem('hv-density');
+    const storedDensity = getStoredPreference('hv-density');
     applyDensity(storedDensity === 'compact' ? 'compact' : 'comfortable');
 
     function escapeHtml(value) {
@@ -1052,7 +1078,12 @@ HTML = """
     }
 
     function renderPasswordRows(items) {
-      document.getElementById('password-rows').innerHTML = (items || []).map(p => `
+      const rows = document.getElementById('password-rows');
+      if (!items || !items.length) {
+        rows.innerHTML = '<tr><td colspan="7" class="muted">No saved passwords found. Clear the password search box or import a credentials CSV.</td></tr>';
+        return;
+      }
+      rows.innerHTML = items.map(p => `
         <tr>
           <td><code>${escapeHtml(p.name)}</code></td><td>${escapeHtml(p.url)}</td><td>${escapeHtml(p.username)}</td>
           <td>${escapeHtml(p.note)}</td><td>${escapeHtml(p.updated_at)}</td>
@@ -1081,9 +1112,14 @@ HTML = """
     async function loadPasswords() {
       if (!unlocked) { setStatus('Unlock first', 'error'); return; }
       const res = await fetch('/api/passwords?' + passwordQueryParams().toString());
-      if (!res.ok) { setStatus('Could not list passwords', 'error'); return; }
-      renderPasswordRows(await res.json());
-      setStatus('Passwords loaded.');
+      if (!res.ok) {
+        document.getElementById('password-rows').innerHTML = '<tr><td colspan="7" class="muted">Could not load saved passwords for this session.</td></tr>';
+        setStatus('Could not list passwords', 'error');
+        return;
+      }
+      const items = await res.json();
+      renderPasswordRows(items);
+      setStatus(`Passwords loaded (${items.length}).`);
     }
 
     async function beginSecretEdit(name, project, environment) {
@@ -1355,15 +1391,15 @@ HTML = """
       setStatus('Audit loaded.');
     }
     function _slugify(name) {
-      return name.toLowerCase().replace(/[ \t\r\n]+/g, '-').replace(/[^a-z0-9-]/g, '').replace(/^-+|-+$/g, '');
+      return name.toLowerCase().replace(/\\s+/g, '-').replace(/[^a-z0-9-]/g, '').replace(/^-+|-+$/g, '');
     }
 
     function addServiceField() {
       const container = document.getElementById('service-fields');
       const div = document.createElement('div');
       div.className = 'service-field-row';
-      div.innerHTML = '<input class="service-field-name" placeholder="Field name" />'
-        + '<input class="service-field-value" type="password" placeholder="Value" />'
+      div.innerHTML = '<input class="service-field-name" name="service-field-name" placeholder="Field name" />'
+        + '<input class="service-field-value" name="service-field-value" type="password" placeholder="Value" />'
         + '<button type="button" class="fixed secondary remove-btn" data-action="remove-service-field">&#8722;</button>';
       container.appendChild(div);
     }
@@ -1485,7 +1521,7 @@ HTML = """
       if (deleted === 0) {
         setStatus("No fields found for service '" + service + "'.", 'error');
       } else {
-        setStatus('Deleted ' + deleted + ' field(s) for service \'' + service + '\'.', 'success');
+        setStatus(`Deleted ${deleted} field(s) for service '${service}'.`, 'success');
       }
       await loadServices();
     }
@@ -1545,13 +1581,32 @@ STYLE_CSP_HASH = _csp_hash("style")
 SCRIPT_CSP_HASH = _csp_hash("script")
 
 
-def _security_csp() -> str:
+def _security_csp(script_nonce: str | None = None, style_nonce: str | None = None) -> str:
+    script_source = f"'nonce-{script_nonce}'" if script_nonce else SCRIPT_CSP_HASH
+    style_source = f"'nonce-{style_nonce}'" if style_nonce else STYLE_CSP_HASH
     return (
         "default-src 'self'; "
-        f"script-src 'self' {SCRIPT_CSP_HASH}; "
-        f"style-src 'self' {STYLE_CSP_HASH}; "
+        f"script-src 'self' {script_source}; "
+        f"style-src 'self' {style_source}; "
         "img-src 'self' data:; connect-src 'self'; object-src 'none'; "
         "base-uri 'self'; frame-ancestors 'none'"
+    )
+
+
+def _initial_html(initialized: bool) -> str:
+    setup_class = "card hidden" if initialized else "card"
+    login_class = "card" if initialized else "card hidden"
+    return (
+        HTML.replace('<div class="card hidden" id="setup-card">', f'<div class="{setup_class}" id="setup-card">')
+        .replace('<div class="card hidden" id="login-card">', f'<div class="{login_class}" id="login-card">')
+    )
+
+
+def _index_html(initialized: bool, nonce: str) -> str:
+    return (
+        _initial_html(initialized)
+        .replace("<style>", f'<style nonce="{nonce}">', 1)
+        .replace("<script>", f'<script nonce="{nonce}">', 1)
     )
 
 
@@ -1635,8 +1690,10 @@ def create_app(
                 raise HTTPException(status_code=403, detail="Invalid CSRF token")
 
     @app.get("/", response_class=HTMLResponse)
-    def index() -> str:
-        return HTML
+    def index() -> HTMLResponse:
+        nonce = secrets.token_urlsafe(24)
+        html = _index_html(VaultStore(db_path).is_initialized(), nonce)
+        return HTMLResponse(html, headers={"Content-Security-Policy": _security_csp(script_nonce=nonce, style_nonce=nonce)})
 
     @app.get("/api/health")
     def health() -> dict[str, bool]:

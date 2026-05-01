@@ -9,6 +9,7 @@ __pycache__/
 .env.*
 !.env.example
 .henry-vault/
+.superpowers/
 dist/
 build/
 *.egg-info/
