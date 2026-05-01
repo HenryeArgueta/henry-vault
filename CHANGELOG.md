@@ -13,15 +13,19 @@ All notable changes to Henry Vault will be documented in this file.
   - `hv totp-rotate`
   - `hv two-factor-disable`
 - Web onboarding QR-code rendering for authenticator setup using the Python `qrcode` package.
+- API service grouping in the CLI and web UI for saving, listing, copying, and deleting related credential fields under one service name.
 - README security model covering encrypted data, metadata, unlock semantics, recovery-code behavior, and no-reset guidance.
-- Security headers for the local FastAPI web UI/API, including a hash-based CSP that avoids `unsafe-inline`.
+- Security headers for the local FastAPI web UI/API, including a nonce-based CSP that avoids `unsafe-inline`.
 
 ### Changed
 - Web/API login failures now return a generic `Invalid unlock credentials` message while recording sanitized failed-login audit events.
 - Dashboard layout has clearer unlock, search/action, credentials-tool, new-password, and saved-password groups.
+- Existing vaults now render the unlock form in the initial HTML response instead of depending on JavaScript to reveal it.
+- The web UI reports password list counts and empty/error states so imported password visibility is easier to diagnose.
 - README examples use safer public-facing placeholders and a corrected bearer-token flow.
 
 ### Security
+- Web UI script execution now uses per-response CSP nonces, avoiding browser normalization issues that could block all dashboard JavaScript.
 - Recovery-code generation is bounded to 1-20 codes to avoid accidental expensive setup requests.
 - Recovery-code consumption is one-time and conditionally marked used before unlocking the session.
 - Regenerating recovery codes invalidates old unused codes.
