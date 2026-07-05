@@ -647,3 +647,54 @@ def test_cli_short_aliases_add_get_list_delete(tmp_path, monkeypatch):
 
     result = runner.invoke(app, ["--db", str(db_path), "get", "API_KEY", "--project", "demo", "--env", "dev"])
     assert result.exit_code != 0
+
+
+def test_cli_github_link_status_unlink_round_trip(tmp_path, monkeypatch):
+    import henry_vault.cli as cli_module
+    from henry_vault.github_auth import DeviceCode, GitHubUser, read_device_secret
+
+    class FakeAuth:
+        def __init__(self, client_id, **kwargs):
+            self.client_id = client_id
+
+        def request_device_code(self):
+            return DeviceCode(
+                device_code="dc123",
+                user_code="ABCD-1234",
+                verification_uri="https://github.com/login/device",
+                expires_in=900,
+                interval=0,
+            )
+
+        def poll_token(self, device_code):
+            return "gho_token"
+
+        def fetch_user(self, token):
+            return GitHubUser(id=777, login="henry")
+
+    monkeypatch.setattr(cli_module, "GitHubDeviceAuth", FakeAuth)
+    db_path = tmp_path / "vault.db"
+    monkeypatch.setenv("HENRY_VAULT_PASSWORD", "pw")
+    assert runner.invoke(app, ["--db", str(db_path), "init"]).exit_code == 0
+
+    result = runner.invoke(app, ["--db", str(db_path), "github-link", "--client-id", "Iv1.x"])
+    assert result.exit_code == 0
+    assert "ABCD-1234" in result.output
+    assert "henry" in result.output
+
+    device_secret = read_device_secret(db_path)
+    assert device_secret is not None
+    fresh = VaultStore(db_path)
+    fresh.unlock_with_device_secret(device_secret)
+
+    result = runner.invoke(app, ["--db", str(db_path), "github-status"])
+    assert result.exit_code == 0
+    assert "henry" in result.output
+
+    result = runner.invoke(app, ["--db", str(db_path), "github-unlink"])
+    assert result.exit_code == 0
+    assert read_device_secret(db_path) is None
+
+    result = runner.invoke(app, ["--db", str(db_path), "github-status"])
+    assert result.exit_code == 0
+    assert "not linked" in result.output.lower()

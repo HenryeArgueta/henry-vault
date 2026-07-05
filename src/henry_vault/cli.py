@@ -11,6 +11,14 @@ import typer
 
 from .backup import export_backup, import_backup, prune_backups
 from .doctor import doctor_report
+from .github_auth import (
+    GitHubAuthError,
+    GitHubDeviceAuth,
+    GitHubUnreachable,
+    read_device_secret,
+    remove_device_secret,
+    write_device_secret,
+)
 from .errors import VaultAlreadyExists, VaultError, VaultLocked, VaultNotInitialized
 from .install import backup_schedule_command, install_cli
 from .scanner import scan_path
@@ -173,6 +181,83 @@ def two_factor_disable(ctx: typer.Context) -> None:
     store.disable_two_factor(_password())
     store.record_audit("two_factor.disable", status="success")
     typer.echo("Two-factor unlock disabled.")
+
+
+@app.command("github-link")
+def github_link(
+    ctx: typer.Context,
+    client_id: Annotated[
+        Optional[str],
+        typer.Option("--client-id", help="Client ID of your GitHub OAuth app with device flow enabled"),
+    ] = None,
+) -> None:
+    """Link a GitHub account so the web UI can unlock with GitHub sign-in."""
+    import time
+
+    store = _unlock(
+        ctx.obj["db"],
+        totp_code=ctx.obj.get("totp_code"),
+        recovery_code=ctx.obj.get("recovery_code"),
+    )
+    existing = store.github_unlock_info()
+    if client_id is None:
+        if existing is None:
+            raise typer.BadParameter(
+                "Pass --client-id from a GitHub OAuth app with device flow enabled "
+                "(github.com -> Settings -> Developer settings -> OAuth Apps)."
+            )
+        client_id = existing.client_id
+    auth = GitHubDeviceAuth(client_id)
+    try:
+        code = auth.request_device_code()
+        typer.echo(f"Open {code.verification_uri} and enter code: {code.user_code}")
+        typer.echo("Waiting for GitHub authorization...")
+        deadline = time.monotonic() + code.expires_in
+        token: Optional[str] = None
+        while token is None:
+            if time.monotonic() > deadline:
+                raise GitHubAuthError("GitHub sign-in timed out; run github-link again")
+            time.sleep(code.interval)
+            token = auth.poll_token(code.device_code)
+        user = auth.fetch_user(token)
+    except GitHubUnreachable as exc:
+        typer.echo(f"GitHub is not reachable: {exc}")
+        raise typer.Exit(1) from exc
+    except GitHubAuthError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(1) from exc
+    device_secret = store.enable_github_unlock(github_user_id=user.id, github_login=user.login, client_id=client_id)
+    secret_path = write_device_secret(ctx.obj["db"], device_secret)
+    store.record_audit("github.link", status="success", message=f"login={user.login}")
+    typer.echo(f"Linked GitHub account {user.login} (id={user.id}).")
+    typer.echo(f"Device secret stored at {secret_path}. The web UI lock screen now offers GitHub sign-in.")
+
+
+@app.command("github-status")
+def github_status(ctx: typer.Context) -> None:
+    """Show whether GitHub unlock is linked, without unlocking the vault."""
+    info = _store(ctx.obj["db"]).github_unlock_info()
+    if info is None:
+        typer.echo("GitHub unlock is not linked.")
+        return
+    secret_present = read_device_secret(ctx.obj["db"]) is not None
+    typer.echo(f"Linked GitHub account: {info.github_login} (id={info.github_user_id})")
+    typer.echo(f"OAuth client ID: {info.client_id}")
+    typer.echo(f"Device secret file present: {'yes' if secret_present else 'NO - web GitHub unlock will fail'}")
+
+
+@app.command("github-unlink")
+def github_unlink(ctx: typer.Context) -> None:
+    """Remove GitHub unlock. Requires the master password."""
+    store = _unlock(
+        ctx.obj["db"],
+        totp_code=ctx.obj.get("totp_code"),
+        recovery_code=ctx.obj.get("recovery_code"),
+    )
+    store.disable_github_unlock()
+    remove_device_secret(ctx.obj["db"])
+    store.record_audit("github.unlink", status="success")
+    typer.echo("GitHub unlock removed. The master password (and recovery codes) still work.")
 
 
 @app.command("secret-add")

@@ -328,7 +328,8 @@ def test_web_status_does_not_disclose_two_factor_state_before_login(tmp_path):
 
     public_status = client.get("/api/status")
     assert public_status.status_code == 200
-    assert public_status.json() == {"initialized": True}
+    assert public_status.json() == {"initialized": True, "github_unlock": False}
+    assert "two_factor" not in public_status.text
 
     login = client.post("/api/login", json={"password": "***", "totp_code": _current_totp(setup.totp_secret)})
     token = login.json()["token"]
@@ -805,3 +806,131 @@ def test_web_index_hides_dashboard_until_unlocked(tmp_path):
     assert response.text.count("dashboard-only") >= 8
     # Session indicator with lock control exists for the unlocked state.
     assert 'id="session-chip"' in response.text
+
+
+class FakeGitHubAuth:
+    def __init__(self, client_id, *, user_id=777, login="henry", fail_mode=None, pending_polls=0):
+        from henry_vault.github_auth import DeviceCode, GitHubUser
+
+        self.client_id = client_id
+        self._user = GitHubUser(id=user_id, login=login)
+        self._fail_mode = fail_mode
+        self._pending_polls = pending_polls
+        self._device_code_cls = DeviceCode
+
+    def request_device_code(self):
+        from henry_vault.github_auth import GitHubUnreachable
+
+        if self._fail_mode == "unreachable":
+            raise GitHubUnreachable("no internet")
+        return self._device_code_cls(
+            device_code="dc123",
+            user_code="ABCD-1234",
+            verification_uri="https://github.com/login/device",
+            expires_in=900,
+            interval=0,
+        )
+
+    def poll_token(self, device_code):
+        from henry_vault.github_auth import GitHubAuthError
+
+        if self._fail_mode == "expired":
+            raise GitHubAuthError("GitHub device flow failed: expired_token")
+        if self._pending_polls > 0:
+            self._pending_polls -= 1
+            return None
+        return "gho_token"
+
+    def fetch_user(self, token):
+        return self._user
+
+
+def _github_enrolled_app(tmp_path, *, fake_factory=None, init_kwargs=None):
+    from henry_vault.github_auth import write_device_secret
+
+    db_path = tmp_path / "vault.db"
+    store = VaultStore(db_path)
+    store.init("pw", **(init_kwargs or {}))
+    store.add_secret(SecretInput(name="TOKEN", value="secret", project="demo", environment="dev"))
+    device_secret = store.enable_github_unlock(github_user_id=777, github_login="henry", client_id="Iv1.x")
+    write_device_secret(db_path, device_secret)
+    factory = fake_factory or (lambda client_id: FakeGitHubAuth(client_id))
+    return TestClient(create_app(db_path, github_auth_factory=factory)), db_path
+
+
+def test_web_status_reports_github_unlock(tmp_path):
+    client, _ = _github_enrolled_app(tmp_path)
+    assert client.get("/api/status").json() == {"initialized": True, "github_unlock": True}
+
+    plain_db = tmp_path / "plain.db"
+    VaultStore(plain_db).init("pw")
+    plain_client = TestClient(create_app(plain_db))
+    assert plain_client.get("/api/status").json() == {"initialized": True, "github_unlock": False}
+
+
+def test_web_github_unlock_happy_path(tmp_path):
+    client, _ = _github_enrolled_app(tmp_path)
+
+    started = client.post("/api/auth/github/start")
+    assert started.status_code == 200
+    body = started.json()
+    assert body["user_code"] == "ABCD-1234"
+    assert body["verification_uri"] == "https://github.com/login/device"
+    ticket = body["ticket"]
+
+    polled = client.post("/api/auth/github/poll", json={"ticket": ticket})
+    assert polled.status_code == 200
+    payload = polled.json()
+    assert payload["status"] == "complete"
+    token = payload["token"]
+
+    listed = client.get(
+        "/api/secrets",
+        params={"project": "demo", "environment": "dev"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert listed.status_code == 200
+    assert listed.json()[0]["name"] == "TOKEN"
+
+
+def test_web_github_unlock_rejects_wrong_account(tmp_path):
+    client, _ = _github_enrolled_app(
+        tmp_path, fake_factory=lambda client_id: FakeGitHubAuth(client_id, user_id=999, login="stranger")
+    )
+    ticket = client.post("/api/auth/github/start").json()["ticket"]
+    polled = client.post("/api/auth/github/poll", json={"ticket": ticket})
+    assert polled.status_code == 403
+    assert "not linked" in polled.json()["detail"].lower()
+
+
+def test_web_github_unlock_unreachable_returns_503(tmp_path):
+    client, _ = _github_enrolled_app(
+        tmp_path, fake_factory=lambda client_id: FakeGitHubAuth(client_id, fail_mode="unreachable")
+    )
+    started = client.post("/api/auth/github/start")
+    assert started.status_code == 503
+    assert "master password" in started.json()["detail"].lower()
+
+
+def test_web_github_unlock_expired_code_returns_410(tmp_path):
+    client, _ = _github_enrolled_app(
+        tmp_path, fake_factory=lambda client_id: FakeGitHubAuth(client_id, fail_mode="expired")
+    )
+    ticket = client.post("/api/auth/github/start").json()["ticket"]
+    polled = client.post("/api/auth/github/poll", json={"ticket": ticket})
+    assert polled.status_code == 410
+
+
+def test_web_github_start_requires_enrollment(tmp_path):
+    db_path = tmp_path / "plain.db"
+    VaultStore(db_path).init("pw")
+    client = TestClient(create_app(db_path))
+    assert client.post("/api/auth/github/start").status_code == 400
+
+
+def test_web_github_unlock_skips_totp(tmp_path):
+    client, _ = _github_enrolled_app(tmp_path, init_kwargs={"enable_two_factor": True, "recovery_code_count": 2})
+    ticket = client.post("/api/auth/github/start").json()["ticket"]
+    polled = client.post("/api/auth/github/poll", json={"ticket": ticket})
+    assert polled.status_code == 200
+    assert polled.json()["status"] == "complete"

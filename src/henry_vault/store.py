@@ -25,6 +25,13 @@ DEFAULT_DB_PATH = Path.home() / ".henry-vault" / "vault.db"
 
 
 @dataclass(frozen=True)
+class GitHubUnlockInfo:
+    github_user_id: int
+    github_login: str
+    client_id: str
+
+
+@dataclass(frozen=True)
 class SecretInput:
     name: str
     value: str
@@ -956,6 +963,55 @@ class VaultStore:
         with self._connect() as conn:
             self._migrate_schema(conn)
             return self._has_meta_key(conn, "totp_secret")
+
+    def enable_github_unlock(self, *, github_user_id: int, github_login: str, client_id: str) -> bytes:
+        vault_key = self.current_vault_key()
+        device_secret = Fernet.generate_key()
+        github_wrap = Fernet(device_secret).encrypt(vault_key).decode()
+        with self._connect() as conn:
+            self._migrate_schema(conn)
+            for key, value in (
+                ("github_wrap", github_wrap),
+                ("github_user_id", str(github_user_id)),
+                ("github_login", github_login),
+                ("github_client_id", client_id),
+            ):
+                conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)", (key, value))
+            conn.commit()
+        return device_secret
+
+    def disable_github_unlock(self) -> None:
+        with self._connect() as conn:
+            self._migrate_schema(conn)
+            conn.execute(
+                "DELETE FROM meta WHERE key IN ('github_wrap', 'github_user_id', 'github_login', 'github_client_id')"
+            )
+            conn.commit()
+
+    def github_unlock_info(self) -> GitHubUnlockInfo | None:
+        if not self.is_initialized():
+            return None
+        with self._connect() as conn:
+            self._migrate_schema(conn)
+            if not self._has_meta_key(conn, "github_wrap"):
+                return None
+            return GitHubUnlockInfo(
+                github_user_id=int(self._meta(conn, "github_user_id")),
+                github_login=self._meta(conn, "github_login"),
+                client_id=self._meta(conn, "github_client_id"),
+            )
+
+    def unlock_with_device_secret(self, device_secret: bytes) -> None:
+        with self._connect() as conn:
+            self._migrate_schema(conn)
+            if not self._has_meta_key(conn, "github_wrap"):
+                raise VaultLocked("GitHub unlock is not enabled for this vault")
+            github_wrap = self._meta(conn, "github_wrap")
+        try:
+            vault_key = Fernet(device_secret).decrypt(github_wrap.encode())
+        except (InvalidToken, ValueError) as exc:
+            raise VaultLocked("Invalid GitHub device secret") from exc
+        self.unlock_with_vault_key(vault_key)
 
     def _meta(self, conn: sqlite3.Connection, key: str) -> str:
         row = conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()

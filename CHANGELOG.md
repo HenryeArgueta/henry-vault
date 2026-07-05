@@ -2,6 +2,19 @@
 
 All notable changes to Henry Vault will be documented in this file.
 
+## [0.4.0] - 2026-07-05
+
+### Added
+- GitHub sign-in on the web lock screen using the OAuth device flow: click the button, enter the short code at github.com/login/device, and the vault unlocks. The master password and recovery codes always keep working offline.
+- CLI enrollment lifecycle: `hv github-link --client-id <ID>`, `hv github-status`, `hv github-unlink`.
+- Key model: enrollment wraps the vault key with a random device secret (`~/.henry-vault/github-device.secret`, chmod 0600) — the same trust model as recovery codes. Only the enrolled GitHub user ID (immutable, not the rename-able login) can unlock. No scopes are requested and the GitHub token is never stored.
+- New audit events: `github.link`, `github.unlink`, `web.login.github`.
+- `/api/status` now reports whether GitHub unlock is available; new endpoints `/api/auth/github/start` and `/api/auth/github/poll`.
+
+### Security
+- Failed GitHub unlock attempts (wrong account) count toward the existing login rate limiter and are audited.
+- Server-side polling respects GitHub's device-flow interval regardless of browser polling frequency.
+
 ## [0.3.1] - 2026-07-05
 
 ### Added

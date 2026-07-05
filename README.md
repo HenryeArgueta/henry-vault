@@ -5,7 +5,7 @@ Henry Vault is a local-first encrypted secrets manager with both a CLI and a web
 Install from the latest release:
 
 ```bash
-pipx install 'git+https://github.com/HenryeArgueta/henry-vault.git@v0.3.0'
+pipx install 'git+https://github.com/HenryeArgueta/henry-vault.git@v0.4.0'
 ```
 
 Or install from the latest branch tip:
@@ -384,6 +384,24 @@ First-run onboarding flow:
 
 Important: keep this local-only by default. Do not expose it to the public internet without TLS, stronger rate limiting, and network controls such as Tailscale, WireGuard, or Cloudflare Access.
 
+## Unlock with GitHub (web UI)
+
+When internet is available, you can unlock the web UI by signing in with your GitHub account instead of typing the master password. If GitHub is unreachable, the master password (and recovery codes) always still work — GitHub can never lock you out.
+
+One-time setup:
+
+1. Create a free GitHub OAuth App (github.com → Settings → Developer settings → OAuth Apps → New). Any name/URL; check **Enable Device Flow**. No callback URL or client secret is needed — only the public client ID.
+2. Link your account (prompts for your master password, then walks you through a one-time GitHub device sign-in):
+
+```bash
+hv github-link --client-id YOUR_CLIENT_ID
+hv github-status
+```
+
+After that, the web lock screen shows a "Sign in with GitHub" button: click it, enter the short code at github.com/login/device, and the vault unlocks. Only the exact GitHub account you linked (matched by immutable user ID) can unlock. Remove it any time with `hv github-unlink`.
+
+How it works and what it protects: enrollment wraps the vault key with a random device secret stored in `~/.henry-vault/github-device.secret` (chmod 0600), and a successful GitHub sign-in releases it — the same trust model as recovery codes. GitHub receives no vault data and no scopes are requested; the GitHub token is used once to read your user ID and then discarded. GitHub unlock skips the vault TOTP prompt since your GitHub account brings its own 2FA. Someone with full access to this machine could bypass GitHub by combining the secret file with the database, so the master password remains the real cryptographic protection.
+
 ## API examples
 
 ```bash
@@ -426,7 +444,7 @@ pipx upgrade henry-vault
 From GitHub, use the published tag for a stable install:
 
 ```bash
-pipx install 'git+https://github.com/HenryeArgueta/henry-vault.git@v0.3.0'
+pipx install 'git+https://github.com/HenryeArgueta/henry-vault.git@v0.4.0'
 ```
 
 You can also install from the latest branch tip:

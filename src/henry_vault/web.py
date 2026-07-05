@@ -9,7 +9,7 @@ import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 import qrcode
 from fastapi import Cookie, Depends, File, FastAPI, Form, Header, HTTPException, Query, Request, Response, UploadFile
@@ -19,6 +19,7 @@ from qrcode.image.svg import SvgPathImage
 
 from .doctor import doctor_report
 from .errors import VaultAlreadyExists, VaultLocked, VaultNotInitialized
+from .github_auth import GitHubAuthError, GitHubDeviceAuth, GitHubUnreachable, read_device_secret
 from .store import AttachmentInput, DEFAULT_DB_PATH, PasswordInput, SecretInput, VaultStore
 
 
@@ -51,6 +52,10 @@ class VaultInitRequest(BaseModel):
     recovery_code_count: int = Field(default=8, ge=1, le=20)
 
 
+class GitHubPollRequest(BaseModel):
+    ticket: str
+
+
 @dataclass
 class Session:
     vault_key: bytes
@@ -62,6 +67,14 @@ class Session:
 class FailedLoginState:
     count: int = 0
     locked_until: datetime | None = None
+
+
+@dataclass
+class GitHubTicket:
+    device_code: str
+    interval: int
+    expires_at: datetime
+    last_github_poll: datetime | None = None
 
 
 COOKIE_NAME = "hv_session"
@@ -429,6 +442,22 @@ HTML = """
     }
     .toast.visible { opacity: 1; transform: translateY(0); }
     body:not(.unlocked) .dashboard-only { display: none; }
+    .github-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: .55rem;
+      padding: .6rem 1.1rem;
+      font-weight: 600;
+    }
+    .github-code-panel { margin-top: .6rem; }
+    .github-code-panel p { margin: .35rem 0; }
+    .github-user-code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 1.25rem;
+      letter-spacing: .12em;
+      user-select: all;
+    }
+    .github-or { margin-top: 1rem; opacity: .8; }
     body:not(.unlocked) .topbar .card { max-width: 720px; margin-left: auto; margin-right: auto; }
     .session-chip {
       display: flex;
@@ -524,6 +553,20 @@ HTML = """
       <button class="secondary" type="button" data-action="logout">Lock</button>
     </div>
     <div class="card hidden" id="login-card">
+      <div class="top-group hidden" id="github-login">
+        <div class="section-label">Sign in with GitHub</div>
+        <button id="github-signin" class="github-btn" type="button" data-action="github-signin">
+          <svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+          Sign in with GitHub
+        </button>
+        <div id="github-code-panel" class="github-code-panel hidden">
+          <p>Enter code <strong id="github-user-code" class="github-user-code"></strong> at
+            <a id="github-verify-link" href="https://github.com/login/device" target="_blank" rel="noopener">github.com/login/device</a></p>
+          <p class="muted" id="github-signin-status">Waiting for GitHub approval&hellip;</p>
+          <button class="secondary" type="button" data-action="github-cancel">Cancel</button>
+        </div>
+        <div class="section-label github-or">or unlock with your master password</div>
+      </div>
       <div class="top-group">
         <div class="section-label">Unlock</div>
         <form id="login-form" class="row">
@@ -906,6 +949,7 @@ HTML = """
     function setLockedUI(message) {
       unlocked = false;
       csrfToken = '';
+      resetGitHubSignin();
       sessionExpiresAt = null;
       clearInterval(sessionTimer);
       document.body.classList.remove('unlocked');
@@ -913,6 +957,78 @@ HTML = """
       document.getElementById('login-card')?.classList.remove('hidden');
       if (message) setStatus(message, 'error');
       document.getElementById('password')?.focus();
+    }
+
+    let githubTicket = null;
+    let githubPollTimer = null;
+
+    function resetGitHubSignin() {
+      githubTicket = null;
+      clearTimeout(githubPollTimer);
+      githubPollTimer = null;
+      document.getElementById('github-code-panel')?.classList.add('hidden');
+      const button = document.getElementById('github-signin');
+      if (button) button.disabled = false;
+    }
+
+    async function githubSignin() {
+      resetGitHubSignin();
+      const button = document.getElementById('github-signin');
+      button.disabled = true;
+      let res;
+      try {
+        res = await fetch('/api/auth/github/start', {method: 'POST'});
+      } catch (error) {
+        button.disabled = false;
+        setStatus('GitHub is not reachable. Unlock with your master password instead.', 'error');
+        return;
+      }
+      if (!res.ok) {
+        button.disabled = false;
+        const detail = (await res.json().catch(() => ({}))).detail;
+        setStatus(detail || 'GitHub sign-in failed to start.', 'error');
+        return;
+      }
+      const data = await res.json();
+      githubTicket = data.ticket;
+      document.getElementById('github-user-code').textContent = data.user_code;
+      const link = document.getElementById('github-verify-link');
+      link.href = data.verification_uri;
+      link.textContent = data.verification_uri.replace('https://', '');
+      document.getElementById('github-signin-status').textContent = 'Waiting for GitHub approval…';
+      document.getElementById('github-code-panel').classList.remove('hidden');
+      const intervalMs = Math.max(3, data.interval || 5) * 1000;
+      const poll = async () => {
+        if (!githubTicket) return;
+        let pollRes;
+        try {
+          pollRes = await fetch('/api/auth/github/poll', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ticket: githubTicket}),
+          });
+        } catch (error) {
+          githubPollTimer = setTimeout(poll, intervalMs);
+          return;
+        }
+        if (pollRes.status === 200) {
+          const payload = await pollRes.json();
+          if (payload.status === 'pending') {
+            githubPollTimer = setTimeout(poll, intervalMs);
+            return;
+          }
+          csrfToken = payload.csrf_token || '';
+          resetGitHubSignin();
+          setUnlockedUI(payload.expires_in);
+          setStatus('Unlocked with GitHub.', 'success');
+          await applyFilters();
+          return;
+        }
+        const detail = (await pollRes.json().catch(() => ({}))).detail;
+        resetGitHubSignin();
+        setStatus(detail || 'GitHub sign-in failed. Unlock with your master password instead.', 'error');
+      };
+      githubPollTimer = setTimeout(poll, intervalMs);
     }
 
     const rawFetch = window.fetch.bind(window);
@@ -934,6 +1050,7 @@ HTML = """
         if (data.initialized) {
           setupCard?.classList.add('hidden');
           loginCard?.classList.remove('hidden');
+          document.getElementById('github-login')?.classList.toggle('hidden', !data.github_unlock);
           document.getElementById('password')?.focus();
           setStatus('Vault is ready. Unlock with the master password. If 2FA is enabled, include your authenticator code or a recovery code.', 'success');
         } else {
@@ -1679,6 +1796,8 @@ HTML = """
       else if (action === 'delete-attachment') deleteAttachment(name, project, environment);
       else if (action === 'copy-password') copyPassword(name, url, username);
       else if (action === 'delete-password') deletePassword(name, url, username);
+      else if (action === 'github-signin') githubSignin();
+      else if (action === 'github-cancel') resetGitHubSignin();
       else if (action === 'generate-password') generatePassword();
       else if (action === 'toggle-password-visibility') togglePasswordVisibility();
       else if (action === 'add-service-field') addServiceField();
@@ -1749,10 +1868,13 @@ def create_app(
     *,
     max_failed_logins: int = 5,
     lockout_seconds: int = 60,
+    github_auth_factory: Callable[[str], GitHubDeviceAuth] | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Henry Vault", version="0.3.0")
     sessions: dict[str, Session] = {}
     failed_logins: dict[str, FailedLoginState] = {}
+    github_tickets: dict[str, GitHubTicket] = {}
+    make_github_auth = github_auth_factory or (lambda client_id: GitHubDeviceAuth(client_id))
 
     @app.middleware("http")
     async def add_security_headers(request: Request, call_next):
@@ -1847,7 +1969,8 @@ def create_app(
     @app.get("/api/status")
     def status() -> dict[str, bool]:
         store = VaultStore(db_path)
-        return {"initialized": store.is_initialized()}
+        github_ready = store.github_unlock_info() is not None and read_device_secret(db_path) is not None
+        return {"initialized": store.is_initialized(), "github_unlock": github_ready}
 
     @app.get("/api/session/status")
     def session_status(store: VaultStore = Depends(store_for_session)) -> dict[str, bool]:
@@ -1915,6 +2038,11 @@ def create_app(
                     pass
             raise
         failed_logins.pop(key, None)
+        session_payload = issue_session(store, response)
+        store.record_audit("web.login", status="success")
+        return session_payload
+
+    def issue_session(store: VaultStore, response: Response) -> dict[str, str | int]:
         token = secrets.token_urlsafe(32)
         csrf_token = secrets.token_urlsafe(32)
         ttl_seconds = 15 * 60
@@ -1931,8 +2059,90 @@ def create_app(
             samesite="strict",
             secure=False,
         )
-        store.record_audit("web.login", status="success")
         return {"token": token, "csrf_token": csrf_token, "expires_in": ttl_seconds}
+
+    @app.post("/api/auth/github/start")
+    def github_start(request: Request) -> dict[str, str | int]:
+        key = client_key(request)
+        ensure_not_locked_out(key)
+        store = VaultStore(db_path)
+        info = store.github_unlock_info()
+        if info is None or read_device_secret(db_path) is None:
+            raise HTTPException(status_code=400, detail="GitHub unlock is not linked; run 'hv github-link'")
+        auth = make_github_auth(info.client_id)
+        try:
+            code = auth.request_device_code()
+        except GitHubUnreachable as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="GitHub is not reachable. Unlock with your master password instead.",
+            ) from exc
+        except GitHubAuthError as exc:
+            raise HTTPException(status_code=502, detail=f"GitHub sign-in failed to start: {exc}") from exc
+        ticket = secrets.token_urlsafe(32)
+        github_tickets[ticket] = GitHubTicket(
+            device_code=code.device_code,
+            interval=code.interval,
+            expires_at=datetime.now(UTC) + timedelta(seconds=code.expires_in),
+        )
+        return {
+            "ticket": ticket,
+            "user_code": code.user_code,
+            "verification_uri": code.verification_uri,
+            "expires_in": code.expires_in,
+            "interval": code.interval,
+        }
+
+    @app.post("/api/auth/github/poll")
+    def github_poll(request: Request, response: Response, poll_request: GitHubPollRequest) -> dict[str, str | int]:
+        key = client_key(request)
+        ensure_not_locked_out(key)
+        ticket = github_tickets.get(poll_request.ticket)
+        if ticket is None:
+            raise HTTPException(status_code=404, detail="Unknown GitHub sign-in ticket; start again")
+        now = datetime.now(UTC)
+        if ticket.expires_at <= now:
+            github_tickets.pop(poll_request.ticket, None)
+            raise HTTPException(status_code=410, detail="GitHub sign-in timed out; try again")
+        # Respect GitHub's polling interval regardless of how often the browser asks.
+        if ticket.last_github_poll and (now - ticket.last_github_poll).total_seconds() < ticket.interval:
+            return {"status": "pending"}
+        ticket.last_github_poll = now
+        store = VaultStore(db_path)
+        info = store.github_unlock_info()
+        if info is None:
+            github_tickets.pop(poll_request.ticket, None)
+            raise HTTPException(status_code=400, detail="GitHub unlock is not linked; run 'hv github-link'")
+        auth = make_github_auth(info.client_id)
+        try:
+            token = auth.poll_token(ticket.device_code)
+            if token is None:
+                return {"status": "pending"}
+            user = auth.fetch_user(token)
+        except GitHubUnreachable as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="GitHub is not reachable. Unlock with your master password instead.",
+            ) from exc
+        except GitHubAuthError as exc:
+            github_tickets.pop(poll_request.ticket, None)
+            raise HTTPException(status_code=410, detail="GitHub sign-in timed out; try again") from exc
+        github_tickets.pop(poll_request.ticket, None)
+        if user.id != info.github_user_id:
+            record_failed_login(key)
+            store.record_audit("web.login.github", status="failed", message=f"unlinked account {user.login}")
+            raise HTTPException(status_code=403, detail="That GitHub account is not linked to this vault")
+        device_secret = read_device_secret(db_path)
+        if device_secret is None:
+            raise HTTPException(status_code=409, detail="Device secret file is missing; run 'hv github-link' again")
+        try:
+            store.unlock_with_device_secret(device_secret)
+        except VaultLocked as exc:
+            raise HTTPException(status_code=409, detail="Stored GitHub unlock data is invalid; run 'hv github-link' again") from exc
+        failed_logins.pop(key, None)
+        session_payload = issue_session(store, response)
+        store.record_audit("web.login.github", status="success", message=f"login={user.login}")
+        return {"status": "complete", **session_payload}
 
     @app.post("/api/logout")
     def logout(

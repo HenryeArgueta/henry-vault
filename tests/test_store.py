@@ -346,3 +346,59 @@ def test_store_service_helpers(tmp_path):
     assert deleted == 2
     assert store.list_service_names() == ["github"]
     assert store.get_secret("OTHER", project="default") is not None
+
+
+def test_github_unlock_enable_round_trip(tmp_path):
+    db_path = tmp_path / "vault.db"
+    store = VaultStore(db_path)
+    store.init("pw")
+    store.unlock("pw")
+    store.add_secret(SecretInput(name="TOKEN", value="secret", project="demo", environment="dev"))
+
+    device_secret = store.enable_github_unlock(github_user_id=12345, github_login="henry", client_id="Iv1.abc")
+
+    info = VaultStore(db_path).github_unlock_info()
+    assert info is not None
+    assert info.github_user_id == 12345
+    assert info.github_login == "henry"
+    assert info.client_id == "Iv1.abc"
+
+    fresh = VaultStore(db_path)
+    fresh.unlock_with_device_secret(device_secret)
+    assert fresh.get_secret("TOKEN", project="demo", environment="dev").value == "secret"
+
+
+def test_github_unlock_rejects_wrong_device_secret(tmp_path):
+    from cryptography.fernet import Fernet
+
+    db_path = tmp_path / "vault.db"
+    store = VaultStore(db_path)
+    store.init("pw")
+    store.unlock("pw")
+    store.enable_github_unlock(github_user_id=1, github_login="henry", client_id="Iv1.abc")
+
+    fresh = VaultStore(db_path)
+    with pytest.raises(VaultLocked):
+        fresh.unlock_with_device_secret(Fernet.generate_key())
+
+
+def test_github_unlock_disable_removes_access(tmp_path):
+    db_path = tmp_path / "vault.db"
+    store = VaultStore(db_path)
+    store.init("pw")
+    store.unlock("pw")
+    device_secret = store.enable_github_unlock(github_user_id=1, github_login="henry", client_id="Iv1.abc")
+
+    store.disable_github_unlock()
+
+    assert VaultStore(db_path).github_unlock_info() is None
+    fresh = VaultStore(db_path)
+    with pytest.raises(VaultLocked):
+        fresh.unlock_with_device_secret(device_secret)
+
+
+def test_github_unlock_info_none_when_not_enrolled(tmp_path):
+    db_path = tmp_path / "vault.db"
+    store = VaultStore(db_path)
+    store.init("pw")
+    assert store.github_unlock_info() is None
