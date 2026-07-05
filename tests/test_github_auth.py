@@ -96,3 +96,15 @@ def test_device_secret_file_round_trip(tmp_path):
 
 def test_read_device_secret_missing_returns_none(tmp_path):
     assert read_device_secret(tmp_path / "vault.db") is None
+
+
+def test_write_device_secret_tightens_existing_loose_permissions(tmp_path):
+    db_path = tmp_path / "vault.db"
+    loose = device_secret_path(db_path)
+    loose.write_bytes(b"old")
+    loose.chmod(0o644)
+
+    write_device_secret(db_path, b"new-secret")
+
+    assert loose.stat().st_mode & 0o777 == 0o600
+    assert read_device_secret(db_path) == b"new-secret"

@@ -108,7 +108,11 @@ def device_secret_path(db_path: Path | str) -> Path:
 def write_device_secret(db_path: Path | str, device_secret: bytes) -> Path:
     path = device_secret_path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(device_secret)
+    # Create with 0600 from the start; a plain write-then-chmod leaves a window
+    # where the secret is readable via the process umask.
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(device_secret)
     os.chmod(path, 0o600)
     return path
 
