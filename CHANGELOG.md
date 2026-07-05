@@ -2,6 +2,22 @@
 
 All notable changes to Henry Vault will be documented in this file.
 
+## [0.3.1] - 2026-07-05
+
+### Added
+- `add`, `get`, `list`, and `delete` CLI aliases for `secret-add`, `secret-get`, `secret-list`, and `secret-delete`, matching the README quickstart.
+- Focused lock screen: the dashboard stays hidden until the vault is unlocked, and the unlock form is the only thing shown when locked.
+- Session chip showing unlock state and time remaining, with a Lock button; the UI returns to the lock screen when the session expires or any API call returns 401.
+- "Generate strong password" and Show/Hide buttons on the new-password form (20 characters, cryptographically random).
+- `/favicon.ico` endpoint so browsers stop logging 404s.
+
+### Fixed
+- Mobile layout: form fields no longer render hundreds of pixels tall (desktop `flex-basis` leaked into the stacked column layout).
+- Toast notifications moved to the bottom-right so they no longer cover the header.
+
+### Changed
+- Updated/Time columns render as friendly local times ("37m ago", "Jul 5, 2026") with the full timestamp on hover instead of raw UTC ISO strings.
+
 ## [0.3.0] - 2026-04-30
 
 ### Added

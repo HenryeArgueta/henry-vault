@@ -779,3 +779,29 @@ def test_web_index_includes_service_js(tmp_path):
     assert 'function deleteService' in response.text
     assert 'tags=service' in response.text
     assert 'add-service-form' in response.text
+
+
+def test_web_serves_favicon(tmp_path):
+    db_path = tmp_path / "vault.db"
+    store = VaultStore(db_path)
+    store.init("pw")
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/favicon.ico")
+    assert response.status_code == 200
+    assert "image" in response.headers["content-type"]
+
+
+def test_web_index_hides_dashboard_until_unlocked(tmp_path):
+    db_path = tmp_path / "vault.db"
+    store = VaultStore(db_path)
+    store.init("pw")
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/")
+    assert response.status_code == 200
+    # Dashboard sections are tagged and hidden by CSS until the body is marked unlocked.
+    assert "body:not(.unlocked) .dashboard-only" in response.text
+    assert response.text.count("dashboard-only") >= 8
+    # Session indicator with lock control exists for the unlocked state.
+    assert 'id="session-chip"' in response.text

@@ -85,6 +85,7 @@ HTML = """
 <html>
 <head>
   <title>Henry Vault</title>
+  <link rel="icon" href="/favicon.ico" type="image/svg+xml" />
   <style>
     :root {
       color-scheme: dark;
@@ -411,7 +412,7 @@ HTML = """
     .section-body { margin-top: 1rem; }
     .toast {
       position: fixed;
-      top: 1rem;
+      bottom: 1.25rem;
       right: 1rem;
       z-index: 1000;
       max-width: min(420px, calc(100vw - 2rem));
@@ -422,11 +423,30 @@ HTML = """
       color: var(--text-color);
       box-shadow: 0 10px 30px rgba(15, 23, 42, .35);
       opacity: 0;
-      transform: translateY(-8px);
+      transform: translateY(8px);
       transition: opacity .18s ease, transform .18s ease;
       pointer-events: none;
     }
     .toast.visible { opacity: 1; transform: translateY(0); }
+    body:not(.unlocked) .dashboard-only { display: none; }
+    body:not(.unlocked) .topbar .card { max-width: 720px; margin-left: auto; margin-right: auto; }
+    .session-chip {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: .75rem;
+      margin-top: .9rem;
+      padding: .45rem .9rem;
+      border: 1px solid var(--border-color);
+      border-radius: 999px;
+      width: fit-content;
+      margin-left: auto;
+      margin-right: auto;
+      background: var(--panel-bg);
+    }
+    .session-chip.expiring { border-color: #b45309; }
+    .session-chip button { margin: 0; padding: .3rem .8rem; }
+    .session-chip.hidden { display: none; }
     .toast.success { border-color: #166534; }
     .toast.error { border-color: #7f1d1d; }
     .section-card { margin-top: 1rem; }
@@ -441,7 +461,8 @@ HTML = """
     @media (max-width: 820px) {
       body { margin: 1rem auto; width: calc(100vw - 2rem); }
       .row { flex-direction: column; align-items: stretch; }
-      .row > * { width: 100%; }
+      /* In column direction flex-basis becomes height, so reset any basis set for desktop rows. */
+      .row > *, .topbar .card .row > * { width: 100%; flex-basis: auto; }
       table { display: block; overflow-x: auto; white-space: nowrap; }
       .grid { grid-template-columns: 1fr; }
     }
@@ -498,6 +519,10 @@ HTML = """
         <button class="fixed secondary" type="button" data-action="dismiss-setup-result">I saved these codes</button>
       </div>
     </div>
+    <div class="session-chip hidden" id="session-chip">
+      <span id="session-chip-label">Unlocked</span>
+      <button class="secondary" type="button" data-action="logout">Lock</button>
+    </div>
     <div class="card hidden" id="login-card">
       <div class="top-group">
         <div class="section-label">Unlock</div>
@@ -508,6 +533,8 @@ HTML = """
           <button class="fixed" type="submit">Unlock</button>
         </form>
       </div>
+    </div>
+    <div class="card dashboard-only" id="actions-card">
       <div class="top-group">
         <div class="section-label">Search and actions</div>
         <form id="filter-form" class="stack">
@@ -526,7 +553,6 @@ HTML = """
             <button id="theme-toggle" class="fixed secondary" type="button" data-action="toggle-theme">Toggle theme</button>
             <select id="theme-select" class="fixed secondary"></select>
             <button id="density-toggle" class="fixed secondary" type="button" data-action="toggle-density">Compact mode</button>
-            <button class="fixed secondary" type="button" data-action="logout">Logout</button>
           </div>
         </form>
       </div>
@@ -543,7 +569,7 @@ HTML = """
     </div>
   </div>
 
-  <div class="card">
+  <div class="card dashboard-only">
     <h2>Add data</h2>
     <div class="grid">
       <form id="add-secret-form" class="stack">
@@ -573,7 +599,7 @@ HTML = """
     <div id="action-status" class="status muted">No action yet.</div>
   </div>
 
-  <div class="card section-card">
+  <div class="card section-card dashboard-only">
     <details open>
       <summary>Doctor</summary>
       <div class="section-body">
@@ -595,7 +621,7 @@ HTML = """
     </details>
   </div>
 
-  <div class="card section-card">
+  <div class="card section-card dashboard-only">
     <details open>
       <summary>Add API Service</summary>
       <div class="section-body stack">
@@ -621,7 +647,7 @@ HTML = """
     </details>
   </div>
 
-  <div class="card section-card">
+  <div class="card section-card dashboard-only">
     <details open>
       <summary>API Services</summary>
       <div class="section-body">
@@ -630,7 +656,7 @@ HTML = """
     </details>
   </div>
 
-  <div class="card section-card">
+  <div class="card section-card dashboard-only">
     <details open>
       <summary>Secrets</summary>
       <div class="section-body">
@@ -642,7 +668,7 @@ HTML = """
     </details>
   </div>
 
-  <div class="card section-card">
+  <div class="card section-card dashboard-only">
     <details open>
       <summary>Attachments</summary>
       <div class="section-body">
@@ -654,7 +680,7 @@ HTML = """
     </details>
   </div>
 
-    <div class="card section-card">
+    <div class="card section-card dashboard-only">
       <details open id="passwords">
         <summary>Passwords</summary>
         <div class="section-body stack">
@@ -676,6 +702,10 @@ HTML = """
               <label>URL <input id="password-url" required placeholder="https://github.com" /></label>
               <label>Username <input id="password-username" required placeholder="henry" /></label>
               <label>Password <input id="password-value" type="password" required placeholder="password" /></label>
+              <div class="row">
+                <button type="button" class="fixed secondary" data-action="generate-password">Generate strong password</button>
+                <button id="password-visibility-toggle" type="button" class="fixed secondary" data-action="toggle-password-visibility">Show</button>
+              </div>
               <label>Note <input id="password-note" placeholder="optional note" /></label>
               <button type="submit">Add password</button>
             </form>
@@ -694,6 +724,8 @@ HTML = """
   <script>
     let unlocked = false;
     let csrfToken = '';
+    let sessionExpiresAt = null;
+    let sessionTimer = null;
     let editingSecret = null;
     let toastTimeout = null;
     let shortcutPrefix = '';
@@ -785,6 +817,21 @@ HTML = """
       return String(value ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
     }
 
+    function formatTimestamp(value) {
+      if (!value) return '';
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return escapeHtml(value);
+      const now = Date.now();
+      const diffMinutes = Math.round((now - date.getTime()) / 60000);
+      let display;
+      if (diffMinutes >= 0 && diffMinutes < 1) display = 'just now';
+      else if (diffMinutes >= 0 && diffMinutes < 60) display = `${diffMinutes}m ago`;
+      else if (diffMinutes >= 0 && diffMinutes < 60 * 24) display = `${Math.round(diffMinutes / 60)}h ago`;
+      else display = date.toLocaleDateString(undefined, {year: 'numeric', month: 'short', day: 'numeric'});
+      const full = date.toLocaleString();
+      return `<span title="${escapeHtml(full)}">${escapeHtml(display)}</span>`;
+    }
+
     function showToast(message, kind = '') {
       const toast = document.getElementById('toast');
       toast.textContent = message;
@@ -824,6 +871,59 @@ HTML = """
       setStatus('Vault setup complete. Keep your recovery codes safe.', 'success');
     }
 
+    function updateSessionChip() {
+      const chip = document.getElementById('session-chip');
+      const label = document.getElementById('session-chip-label');
+      if (!unlocked || sessionExpiresAt === null) return;
+      const remaining = Math.max(0, Math.round((sessionExpiresAt - Date.now()) / 1000));
+      if (remaining <= 0) {
+        setLockedUI('Session expired. Unlock again.');
+        return;
+      }
+      const minutes = Math.floor(remaining / 60);
+      const seconds = String(remaining % 60).padStart(2, '0');
+      label.textContent = `Unlocked · ${minutes}:${seconds} left`;
+      chip.classList.toggle('expiring', remaining <= 120);
+    }
+
+    function setUnlockedUI(expiresIn) {
+      unlocked = true;
+      document.body.classList.add('unlocked');
+      document.getElementById('login-card')?.classList.add('hidden');
+      document.getElementById('setup-card')?.classList.add('hidden');
+      const chip = document.getElementById('session-chip');
+      chip.classList.remove('hidden', 'expiring');
+      sessionExpiresAt = expiresIn ? Date.now() + expiresIn * 1000 : null;
+      clearInterval(sessionTimer);
+      if (sessionExpiresAt) {
+        updateSessionChip();
+        sessionTimer = setInterval(updateSessionChip, 1000);
+      } else {
+        document.getElementById('session-chip-label').textContent = 'Unlocked';
+      }
+    }
+
+    function setLockedUI(message) {
+      unlocked = false;
+      csrfToken = '';
+      sessionExpiresAt = null;
+      clearInterval(sessionTimer);
+      document.body.classList.remove('unlocked');
+      document.getElementById('session-chip')?.classList.add('hidden');
+      document.getElementById('login-card')?.classList.remove('hidden');
+      if (message) setStatus(message, 'error');
+      document.getElementById('password')?.focus();
+    }
+
+    const rawFetch = window.fetch.bind(window);
+    window.fetch = async (...args) => {
+      const res = await rawFetch(...args);
+      if (res.status === 401 && unlocked) {
+        setLockedUI('Session expired. Unlock again.');
+      }
+      return res;
+    };
+
     async function refreshLandingState() {
       const setupCard = document.getElementById('setup-card');
       const loginCard = document.getElementById('login-card');
@@ -834,6 +934,7 @@ HTML = """
         if (data.initialized) {
           setupCard?.classList.add('hidden');
           loginCard?.classList.remove('hidden');
+          document.getElementById('password')?.focus();
           setStatus('Vault is ready. Unlock with the master password. If 2FA is enabled, include your authenticator code or a recovery code.', 'success');
         } else {
           setupCard?.classList.remove('hidden');
@@ -870,12 +971,10 @@ HTML = """
       }
       const data = await res.json();
       csrfToken = data.csrf_token || '';
-      unlocked = true;
       document.getElementById('setup-password').value = '';
       document.getElementById('setup-confirm').value = '';
       renderSetupResult(data.setup);
-      document.getElementById('setup-card')?.classList.add('hidden');
-      document.getElementById('login-card')?.classList.remove('hidden');
+      setUnlockedUI(data.expires_in);
       setStatus(data.setup ? 'Vault initialized. Save the recovery codes shown below.' : 'Vault initialized. You are logged in.', 'success');
       await applyFilters();
       return false;
@@ -1003,10 +1102,10 @@ HTML = """
       }
       const data = await res.json();
       csrfToken = data.csrf_token || '';
-      unlocked = true;
       document.getElementById('password').value = '';
       document.getElementById('totp-code').value = '';
       document.getElementById('recovery-code').value = '';
+      setUnlockedUI(data.expires_in);
       setStatus('Unlocked for this browser.', 'success');
       await applyFilters();
       return false;
@@ -1014,15 +1113,14 @@ HTML = """
 
     async function logout() {
       await fetch('/api/logout', {method: 'POST', headers: csrfHeaders()});
-      csrfToken = '';
-      unlocked = false;
       editingSecret = null;
       refreshSecretSubmitLabel();
       document.getElementById('rows').innerHTML = '';
       document.getElementById('attachment-rows').innerHTML = '';
       document.getElementById('password-rows').innerHTML = '';
       document.getElementById('service-groups').textContent = 'Unlock to load services.';
-      setStatus('Logged out.');
+      setLockedUI();
+      setStatus('Vault locked.');
     }
 
     function secretQueryParams() {
@@ -1059,7 +1157,7 @@ HTML = """
       document.getElementById('rows').innerHTML = (items || []).map(s => `
         <tr>
           <td>${escapeHtml(s.project)}</td><td>${escapeHtml(s.environment)}</td><td><code>${escapeHtml(s.name)}</code></td>
-          <td>${escapeHtml((s.tags || []).join(', '))}</td><td>${escapeHtml(s.updated_at)}</td>
+          <td>${escapeHtml((s.tags || []).join(', '))}</td><td>${formatTimestamp(s.updated_at)}</td>
           <td><button class="fixed secondary" data-action="reveal-secret" data-name="${escapeHtml(s.name)}" data-project="${escapeHtml(s.project)}" data-environment="${escapeHtml(s.environment)}">Copy</button></td>
           <td><button class="fixed secondary" data-action="edit-secret" data-name="${escapeHtml(s.name)}" data-project="${escapeHtml(s.project)}" data-environment="${escapeHtml(s.environment)}">Edit</button></td>
           <td><button class="fixed danger" data-action="delete-secret" data-name="${escapeHtml(s.name)}" data-project="${escapeHtml(s.project)}" data-environment="${escapeHtml(s.environment)}">Delete</button></td>
@@ -1071,7 +1169,7 @@ HTML = """
       document.getElementById('attachment-rows').innerHTML = (items || []).map(a => `
         <tr>
           <td>${escapeHtml(a.project)}</td><td>${escapeHtml(a.environment)}</td><td><code>${escapeHtml(a.name)}</code></td>
-          <td>${escapeHtml(a.filename)}</td><td>${escapeHtml(a.content_type)}</td><td>${escapeHtml(a.updated_at)}</td><td>${escapeHtml(a.size)}</td>
+          <td>${escapeHtml(a.filename)}</td><td>${escapeHtml(a.content_type)}</td><td>${formatTimestamp(a.updated_at)}</td><td>${escapeHtml(a.size)}</td>
           <td><button class="fixed secondary" data-action="download-attachment" data-name="${escapeHtml(a.name)}" data-project="${escapeHtml(a.project)}" data-environment="${escapeHtml(a.environment)}" data-filename="${escapeHtml(a.filename)}">Download</button></td>
           <td><button class="fixed danger" data-action="delete-attachment" data-name="${escapeHtml(a.name)}" data-project="${escapeHtml(a.project)}" data-environment="${escapeHtml(a.environment)}">Delete</button></td>
         </tr>`).join('');
@@ -1086,7 +1184,7 @@ HTML = """
       rows.innerHTML = items.map(p => `
         <tr>
           <td><code>${escapeHtml(p.name)}</code></td><td>${escapeHtml(p.url)}</td><td>${escapeHtml(p.username)}</td>
-          <td>${escapeHtml(p.note)}</td><td>${escapeHtml(p.updated_at)}</td>
+          <td>${escapeHtml(p.note)}</td><td>${formatTimestamp(p.updated_at)}</td>
           <td><button class="fixed secondary" type="button" data-action="copy-password" data-name="${escapeHtml(p.name)}" data-url="${escapeHtml(p.url)}" data-username="${escapeHtml(p.username)}">Copy</button></td>
           <td><button class="fixed danger" type="button" data-action="delete-password" data-name="${escapeHtml(p.name)}" data-url="${escapeHtml(p.url)}" data-username="${escapeHtml(p.username)}">Delete</button></td>
         </tr>`).join('');
@@ -1193,7 +1291,10 @@ HTML = """
         body: JSON.stringify(payload),
       });
       if (!res.ok) { setStatus('Add password failed', 'error'); return false; }
-      document.getElementById('password-value').value = '';
+      const passwordInput = document.getElementById('password-value');
+      passwordInput.value = '';
+      passwordInput.type = 'password';
+      document.getElementById('password-visibility-toggle').textContent = 'Show';
       setStatus(`Saved password ${payload.name}.`, 'success');
       await loadPasswords();
       return false;
@@ -1384,7 +1485,7 @@ HTML = """
       const data = await res.json();
       document.getElementById('audit-events').innerHTML = (data || []).map(event => `
         <tr>
-          <td>${escapeHtml(event.created_at)}</td><td><code>${escapeHtml(event.action)}</code></td><td>${escapeHtml(event.status)}</td>
+          <td>${formatTimestamp(event.created_at)}</td><td><code>${escapeHtml(event.action)}</code></td><td>${escapeHtml(event.status)}</td>
           <td>${escapeHtml(event.project || '-')}/${escapeHtml(event.environment || '-')}</td><td><code>${escapeHtml(event.secret_name || '-')}</code></td>
           <td>${escapeHtml(event.message)}</td>
         </tr>`).join('');
@@ -1526,6 +1627,37 @@ HTML = """
       await loadServices();
     }
 
+    function generatePassword() {
+      const lowers = 'abcdefghjkmnpqrstuvwxyz';
+      const uppers = 'ABCDEFGHJKMNPQRSTUVWXYZ';
+      const digits = '23456789';
+      const symbols = '!@#$%^&*-_=+?';
+      const all = lowers + uppers + digits + symbols;
+      const pick = (chars, count) => {
+        const values = new Uint32Array(count);
+        crypto.getRandomValues(values);
+        return Array.from(values, v => chars[v % chars.length]);
+      };
+      // Guarantee one of each class, fill the rest from the full set, then shuffle.
+      const chars = [...pick(lowers, 1), ...pick(uppers, 1), ...pick(digits, 1), ...pick(symbols, 1), ...pick(all, 16)];
+      const order = new Uint32Array(chars.length);
+      crypto.getRandomValues(order);
+      const password = chars.map((c, i) => [order[i], c]).sort((a, b) => a[0] - b[0]).map(([, c]) => c).join('');
+      const input = document.getElementById('password-value');
+      input.value = password;
+      input.type = 'text';
+      document.getElementById('password-visibility-toggle').textContent = 'Hide';
+      setStatus('Generated a 20-character password. It is visible until you hide or save it.', 'success');
+    }
+
+    function togglePasswordVisibility() {
+      const input = document.getElementById('password-value');
+      const button = document.getElementById('password-visibility-toggle');
+      const show = input.type === 'password';
+      input.type = show ? 'text' : 'password';
+      button.textContent = show ? 'Hide' : 'Show';
+    }
+
     function handleActionClick(event) {
       const button = event.target.closest('[data-action]');
       if (!button) return;
@@ -1547,6 +1679,8 @@ HTML = """
       else if (action === 'delete-attachment') deleteAttachment(name, project, environment);
       else if (action === 'copy-password') copyPassword(name, url, username);
       else if (action === 'delete-password') deletePassword(name, url, username);
+      else if (action === 'generate-password') generatePassword();
+      else if (action === 'toggle-password-visibility') togglePasswordVisibility();
       else if (action === 'add-service-field') addServiceField();
       else if (action === 'remove-service-field') removeServiceField(button);
       else if (action === 'copy-service-field') copyServiceField(button.dataset.name, button.dataset.project, button.dataset.environment);
@@ -1694,6 +1828,17 @@ def create_app(
         nonce = secrets.token_urlsafe(24)
         html = _index_html(VaultStore(db_path).is_initialized(), nonce)
         return HTMLResponse(html, headers={"Content-Security-Policy": _security_csp(script_nonce=nonce, style_nonce=nonce)})
+
+    @app.get("/favicon.ico", include_in_schema=False)
+    def favicon() -> Response:
+        svg = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
+            '<rect x="6" y="13" width="20" height="15" rx="3" fill="#d4a53f"/>'
+            '<path d="M10 13v-3a6 6 0 0 1 12 0v3" fill="none" stroke="#d4a53f" stroke-width="3"/>'
+            '<circle cx="16" cy="20" r="2.4" fill="#1a1610"/>'
+            "</svg>"
+        )
+        return Response(svg, media_type="image/svg+xml", headers={"Cache-Control": "public, max-age=86400"})
 
     @app.get("/api/health")
     def health() -> dict[str, bool]:

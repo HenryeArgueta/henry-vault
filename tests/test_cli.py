@@ -618,3 +618,32 @@ def test_cli_run_allow_missing_starts_command_with_partial_profile(tmp_path, mon
     assert result.exit_code == 0
     assert output_path.read_text() == "secret-value"
     assert "secret-value" not in result.output
+
+
+def test_cli_short_aliases_add_get_list_delete(tmp_path, monkeypatch):
+    db_path = tmp_path / "vault.db"
+    monkeypatch.setenv("HENRY_VAULT_PASSWORD", "pw")
+
+    assert runner.invoke(app, ["--db", str(db_path), "init"]).exit_code == 0
+
+    result = runner.invoke(
+        app,
+        ["--db", str(db_path), "add", "API_KEY", "secret-value", "--project", "demo", "--env", "dev"],
+    )
+    assert result.exit_code == 0
+    assert "saved" in result.output.lower()
+
+    result = runner.invoke(app, ["--db", str(db_path), "get", "API_KEY", "--project", "demo", "--env", "dev"])
+    assert result.exit_code == 0
+    assert result.output.strip() == "secret-value"
+
+    result = runner.invoke(app, ["--db", str(db_path), "list", "--project", "demo", "--env", "dev"])
+    assert result.exit_code == 0
+    assert "API_KEY" in result.output
+    assert "secret-value" not in result.output
+
+    result = runner.invoke(app, ["--db", str(db_path), "delete", "API_KEY", "--project", "demo", "--env", "dev"])
+    assert result.exit_code == 0
+
+    result = runner.invoke(app, ["--db", str(db_path), "get", "API_KEY", "--project", "demo", "--env", "dev"])
+    assert result.exit_code != 0

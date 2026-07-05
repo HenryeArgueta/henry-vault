@@ -258,6 +258,12 @@ def secret_delete(ctx: typer.Context, name: str, project: ProjectOpt = "default"
     typer.echo("Deleted" if deleted else "Not found")
 
 
+app.command("add", help="Alias for secret-add.")(secret_add)
+app.command("get", help="Alias for secret-get.")(get_secret)
+app.command("list", help="Alias for secret-list.")(secret_list)
+app.command("delete", help="Alias for secret-delete.")(secret_delete)
+
+
 @app.command("service-add")
 def service_add(
     ctx: typer.Context,

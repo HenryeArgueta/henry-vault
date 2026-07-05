@@ -34,6 +34,8 @@ hv get API_KEY --project demo --env dev
 hv web --host 127.0.0.1 --port 8787
 ```
 
+`add`, `get`, `list`, and `delete` are shorthand aliases for `secret-add`, `secret-get`, `secret-list`, and `secret-delete`.
+
 Open `http://127.0.0.1:8787`.
 
 If the vault already exists, log in with your master password. If TOTP 2FA is enabled, enter the current authenticator code too. If you ever need emergency recovery, use one of the one-time recovery codes.
