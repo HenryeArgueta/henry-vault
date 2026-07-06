@@ -341,22 +341,25 @@ HTML = """
       overflow: hidden;
       text-overflow: ellipsis;
     }
+    /* Columns: 1 Name, 2 URL, 3 Username, 4 Password, 5 Note, 6 Updated, 7 Copy, 8 Manage */
     #passwords th:nth-child(2),
     #passwords td:nth-child(2),
     #passwords th:nth-child(4),
-    #passwords td:nth-child(4) {
+    #passwords td:nth-child(4),
+    #passwords th:nth-child(5),
+    #passwords td:nth-child(5) {
       overflow-wrap: anywhere;
     }
-    #passwords th:nth-child(6),
-    #passwords td:nth-child(6),
     #passwords th:nth-child(7),
-    #passwords td:nth-child(7) {
+    #passwords td:nth-child(7),
+    #passwords th:nth-child(8),
+    #passwords td:nth-child(8) {
       width: 7.5rem;
       white-space: nowrap;
       text-align: center;
     }
-    #passwords td:nth-child(6) button,
-    #passwords td:nth-child(7) button {
+    #passwords td:nth-child(7) button,
+    #passwords td:nth-child(8) button {
       width: 100%;
     }
     #credentials-import-form {
@@ -458,6 +461,12 @@ HTML = """
       user-select: all;
     }
     .github-or { margin-top: 1rem; opacity: .8; }
+    .password-value {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      margin-right: .4rem;
+      user-select: all;
+      overflow-wrap: anywhere;
+    }
     body:not(.unlocked) .topbar .card { max-width: 720px; margin-left: auto; margin-right: auto; }
     .session-chip {
       display: flex;
@@ -756,7 +765,7 @@ HTML = """
           <div class="subgroup">
             <div class="section-label">Saved passwords</div>
             <table>
-              <thead><tr><th>Name</th><th>URL</th><th>Username</th><th>Note</th><th>Updated</th><th>Copy</th><th>Manage</th></tr></thead>
+              <thead><tr><th>Name</th><th>URL</th><th>Username</th><th>Password</th><th>Note</th><th>Updated</th><th>Copy</th><th>Manage</th></tr></thead>
               <tbody id="password-rows"></tbody>
             </table>
           </div>
@@ -952,6 +961,14 @@ HTML = """
       resetGitHubSignin();
       sessionExpiresAt = null;
       clearInterval(sessionTimer);
+      // Every lock path must leave no vault data in the DOM — CSS hiding alone
+      // would keep revealed values recoverable on a "locked" screen.
+      editingSecret = null;
+      refreshSecretSubmitLabel();
+      document.getElementById('rows').innerHTML = '';
+      document.getElementById('attachment-rows').innerHTML = '';
+      document.getElementById('password-rows').innerHTML = '';
+      document.getElementById('service-groups').textContent = 'Unlock to load services.';
       document.body.classList.remove('unlocked');
       document.getElementById('session-chip')?.classList.add('hidden');
       document.getElementById('login-card')?.classList.remove('hidden');
@@ -1230,12 +1247,6 @@ HTML = """
 
     async function logout() {
       await fetch('/api/logout', {method: 'POST', headers: csrfHeaders()});
-      editingSecret = null;
-      refreshSecretSubmitLabel();
-      document.getElementById('rows').innerHTML = '';
-      document.getElementById('attachment-rows').innerHTML = '';
-      document.getElementById('password-rows').innerHTML = '';
-      document.getElementById('service-groups').textContent = 'Unlock to load services.';
       setLockedUI();
       setStatus('Vault locked.');
     }
@@ -1292,19 +1303,80 @@ HTML = """
         </tr>`).join('');
     }
 
+    const PASSWORD_TABLE_COLUMNS = 8;
+    const PASSWORD_MASK = '••••••••';
+
+    function renderPasswordMessage(message) {
+      document.getElementById('password-rows').innerHTML =
+        `<tr><td colspan="${PASSWORD_TABLE_COLUMNS}" class="muted">${escapeHtml(message)}</td></tr>`;
+    }
+
     function renderPasswordRows(items) {
-      const rows = document.getElementById('password-rows');
       if (!items || !items.length) {
-        rows.innerHTML = '<tr><td colspan="7" class="muted">No saved passwords found. Clear the password search box or import a credentials CSV.</td></tr>';
+        renderPasswordMessage('No saved passwords found. Clear the password search box or import a credentials CSV.');
         return;
       }
-      rows.innerHTML = items.map(p => `
+      document.getElementById('password-rows').innerHTML = items.map(p => `
         <tr>
           <td><code>${escapeHtml(p.name)}</code></td><td>${escapeHtml(p.url)}</td><td>${escapeHtml(p.username)}</td>
+          <td class="password-reveal-cell">
+            <span class="password-value muted">${PASSWORD_MASK}</span>
+            <button class="fixed secondary" type="button" data-action="view-password" data-name="${escapeHtml(p.name)}" data-url="${escapeHtml(p.url)}" data-username="${escapeHtml(p.username)}">View</button>
+          </td>
           <td>${escapeHtml(p.note)}</td><td>${formatTimestamp(p.updated_at)}</td>
           <td><button class="fixed secondary" type="button" data-action="copy-password" data-name="${escapeHtml(p.name)}" data-url="${escapeHtml(p.url)}" data-username="${escapeHtml(p.username)}">Copy</button></td>
           <td><button class="fixed danger" type="button" data-action="delete-password" data-name="${escapeHtml(p.name)}" data-url="${escapeHtml(p.url)}" data-username="${escapeHtml(p.username)}">Delete</button></td>
         </tr>`).join('');
+    }
+
+    async function revealPassword(name, url, username) {
+      const params = new URLSearchParams({name, url, username});
+      let res;
+      try {
+        res = await fetch('/api/passwords/reveal?' + params.toString());
+      } catch (error) {
+        setStatus(`Could not reach the vault to reveal ${name}.`, 'error');
+        return null;
+      }
+      // On 401 the fetch wrapper already relocked the UI with the right message.
+      if (res.status === 401) return null;
+      if (!res.ok) { setStatus(`Could not reveal password for ${name}.`, 'error'); return null; }
+      return (await res.json()).password;
+    }
+
+    function hideRevealedPassword(button) {
+      clearTimeout(button._hideTimer);
+      delete button._hideTimer;
+      const value = button.closest('.password-reveal-cell')?.querySelector('.password-value');
+      if (!value) return;
+      value.textContent = PASSWORD_MASK;
+      value.classList.add('muted');
+      button.textContent = 'View';
+    }
+
+    async function viewPassword(button) {
+      if (!unlocked) { setStatus('Unlock first', 'error'); return; }
+      if (button._hideTimer) {
+        hideRevealedPassword(button);
+        return;
+      }
+      button.disabled = true;
+      try {
+        const {name, url, username} = button.dataset;
+        const password = await revealPassword(name, url, username);
+        // The table may have re-rendered while the fetch was in flight; never
+        // write into (or arm a timer on) a detached row.
+        if (password === null || !button.isConnected) return;
+        const value = button.closest('.password-reveal-cell')?.querySelector('.password-value');
+        if (!value) return;
+        value.textContent = password;
+        value.classList.remove('muted');
+        button.textContent = 'Hide';
+        // Auto-hide so a revealed password never lingers on a walked-away-from screen.
+        button._hideTimer = setTimeout(() => hideRevealedPassword(button), 30000);
+      } finally {
+        button.disabled = false;
+      }
     }
 
     async function loadSecrets() {
@@ -1328,7 +1400,7 @@ HTML = """
       if (!unlocked) { setStatus('Unlock first', 'error'); return; }
       const res = await fetch('/api/passwords?' + passwordQueryParams().toString());
       if (!res.ok) {
-        document.getElementById('password-rows').innerHTML = '<tr><td colspan="7" class="muted">Could not load saved passwords for this session.</td></tr>';
+        renderPasswordMessage('Could not load saved passwords for this session.');
         setStatus('Could not list passwords', 'error');
         return;
       }
@@ -1486,13 +1558,13 @@ HTML = """
     }
 
     async function copyPassword(name, url, username) {
-      const params = new URLSearchParams({name, url, username});
       if (window.ClipboardItem && navigator.clipboard?.write) {
         try {
           await navigator.clipboard.write([new ClipboardItem({
-            'text/plain': fetch('/api/passwords/reveal?' + params.toString())
-              .then(r => { if (!r.ok) throw new Error('fetch failed'); return r.json(); })
-              .then(d => new Blob([d.password], {type: 'text/plain'})),
+            'text/plain': revealPassword(name, url, username).then(password => {
+              if (password === null) throw new Error('reveal failed');
+              return new Blob([password], {type: 'text/plain'});
+            }),
           })]);
           setStatus(`Copied password for ${name}.`, 'success');
           return;
@@ -1500,10 +1572,9 @@ HTML = """
           console.warn('ClipboardItem write failed', error);
         }
       }
-      const res = await fetch('/api/passwords/reveal?' + params.toString());
-      if (!res.ok) { setStatus('Copy password failed', 'error'); return; }
-      const data = await res.json();
-      const copied = await copyTextToClipboard(data.password);
+      const password = await revealPassword(name, url, username);
+      if (password === null) return;
+      const copied = await copyTextToClipboard(password);
       if (!copied) {
         setStatus(`Could not copy password for ${name}. Your browser may block clipboard access.`, 'error');
         return;
@@ -1794,6 +1865,7 @@ HTML = """
       else if (action === 'delete-secret') deleteSecret(name, project, environment);
       else if (action === 'download-attachment') downloadAttachment(name, project, environment, filename);
       else if (action === 'delete-attachment') deleteAttachment(name, project, environment);
+      else if (action === 'view-password') viewPassword(button);
       else if (action === 'copy-password') copyPassword(name, url, username);
       else if (action === 'delete-password') deletePassword(name, url, username);
       else if (action === 'github-signin') githubSignin();

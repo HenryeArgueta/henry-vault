@@ -5,7 +5,7 @@ Henry Vault is a local-first encrypted secrets manager with both a CLI and a web
 Install from the latest release:
 
 ```bash
-pipx install 'git+https://github.com/HenryeArgueta/henry-vault.git@v0.4.0'
+pipx install 'git+https://github.com/HenryeArgueta/henry-vault.git@v0.4.1'
 ```
 
 Or install from the latest branch tip:
@@ -444,7 +444,7 @@ pipx upgrade henry-vault
 From GitHub, use the published tag for a stable install:
 
 ```bash
-pipx install 'git+https://github.com/HenryeArgueta/henry-vault.git@v0.4.0'
+pipx install 'git+https://github.com/HenryeArgueta/henry-vault.git@v0.4.1'
 ```
 
 You can also install from the latest branch tip:

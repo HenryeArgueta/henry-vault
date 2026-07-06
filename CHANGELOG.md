@@ -2,6 +2,16 @@
 
 All notable changes to Henry Vault will be documented in this file.
 
+## [0.4.1] - 2026-07-06
+
+### Added
+- View/Hide button on each saved password: reveals the value inline (audited server-side), auto-hides after 30 seconds, and keeps the Copy and Delete buttons.
+
+### Fixed
+- Locking the vault by session expiry or a 401 now clears all vault data from the page, matching explicit logout; previously a revealed password could linger in the hidden DOM of a locked screen.
+- Passwords-table column CSS realigned for the new Password column (Note wraps again, Copy/Manage sizing restored) and long revealed values wrap instead of overlapping neighboring columns.
+- Double-clicking View no longer fires duplicate reveal requests or leaks a stray auto-hide timer; network failures during reveal now show a clear message instead of failing silently.
+
 ## [0.4.0] - 2026-07-05
 
 ### Added

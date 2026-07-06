@@ -493,8 +493,10 @@ def test_web_index_includes_edit_search_and_attachment_controls(tmp_path):
     assert '#passwords table {' in response.text
     assert 'table-layout: fixed' in response.text
     assert '#passwords th:nth-child(1),' in response.text
-    assert '#passwords th:nth-child(6),' in response.text
-    assert '#passwords td:nth-child(6) button,' in response.text
+    # Action columns are 7 (Copy) and 8 (Manage) since the Password column was added.
+    assert '#passwords th:nth-child(7),' in response.text
+    assert '#passwords td:nth-child(7) button,' in response.text
+    assert '#passwords td:nth-child(8) button {' in response.text
     assert 'type="button" data-action="copy-password"' in response.text
     assert 'type="button" data-action="delete-password"' in response.text
     assert 'navigator.clipboard.writeText' in response.text
@@ -934,3 +936,14 @@ def test_web_github_unlock_skips_totp(tmp_path):
     polled = client.post("/api/auth/github/poll", json={"ticket": ticket})
     assert polled.status_code == 200
     assert polled.json()["status"] == "complete"
+
+
+def test_web_index_has_password_view_toggle(tmp_path):
+    db_path = tmp_path / "vault.db"
+    VaultStore(db_path).init("pw")
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/")
+    assert response.status_code == 200
+    assert 'data-action="view-password"' in response.text
+    assert "<th>Password</th>" in response.text
